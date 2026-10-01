@@ -1,8 +1,6 @@
-import { $, $$, api, state, esc, icon, avatar, netLabel, netColor, countFor, richText, toast, toastError, busy, modal, menu, fmt, zoned, fromZoned, toLocalInput, fromLocalInput, go, debounce, statusBadge, accountById, refresh } from '../core.js';
+import { $, $$, api, state, esc, icon, avatar, netLabel, netColor, countFor, richText, toast, toastError, busy, modal, menu, fmt, go, debounce, statusBadge, accountById, refresh, uploadFile } from '../core.js';
 
 const DRAFT_KEY = 'composer-draft';
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-let bestCache = null;
 
 const store = {
   get() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return null; } },
@@ -11,33 +9,30 @@ const store = {
 };
 
 export async function render(root, params) {
-  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'now', when: '', recycle: false, recycleDays: 7, recycleLeft: '', notes: '', uploads: 0 };
+  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'queue', notes: '', uploads: 0 };
 
   if (params.get('id')) {
     const p = await api(`/posts/${params.get('id')}`);
-    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, notes: p.notes || '', recycle: !!p.recycle_days, recycleDays: p.recycle_days || 7, recycleLeft: p.recycle_left ?? '' });
-    s.mode = p.status === 'draft' ? 'draft' : 'schedule';
-    s.when = toLocalInput(p.scheduled_at);
+    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, notes: p.notes || '' });
   } else {
     const saved = store.get();
     if (saved && !params.toString()) {
-      Object.assign(s, { text: saved.text || '', overrides: saved.overrides || {}, customize: !!saved.customize, mode: saved.mode || 'now', when: saved.when || '', notes: saved.notes || '' });
+      Object.assign(s, { text: saved.text || '', overrides: saved.overrides || {}, customize: !!saved.customize, mode: saved.mode === 'now' ? 'now' : 'queue', notes: saved.notes || '' });
       s.accountIds = new Set((saved.accountIds || []).filter((id) => accountById(id)));
       if (saved.media?.length) { const lib = await api('/media'); s.media = lib.filter((m) => saved.media.includes(m.id)); }
     } else {
       const last = store.get()?.accountIds || [];
       s.accountIds = new Set(last.filter((id) => accountById(id)));
     }
-    if (params.get('date')) { s.mode = 'schedule'; s.when = `${params.get('date')}T09:00`; }
     if (params.get('text')) s.text = params.get('text');
     if (params.get('media')) { const ids = params.get('media').split(',').map(Number); const lib = await api('/media'); s.media = lib.filter((m) => ids.includes(m.id)); }
   }
-  if (!state.accounts.length) s.mode = 'draft';
+  if (!state.accounts.length) s.mode = 'queue';
   const readOnly = s.post && ['published', 'publishing'].includes(s.post.status);
 
   root.innerHTML = `<div class="page">
     <div class="page-head">
-      <div class="grow"><h1>${s.id ? `Edit post` : 'Create post'}</h1><p class="sub">${s.id ? `${statusBadge(s.post.status)} ${s.post.scheduled_at ? fmt.dateTime(s.post.scheduled_at) : ''}` : 'Write once, publish everywhere — tweak per network when you need to.'}</p></div>
+      <div class="grow"><h1>${s.id ? `Edit post` : 'Create post'}</h1><p class="sub">${s.id ? `${statusBadge(s.post.status)} added ${fmt.dateTime(s.post.created_at)}` : 'Write once, publish everywhere — add it to your queue, then post when you’re ready.'}</p></div>
       ${s.id ? '' : `<button class="btn ghost sm" id="clear">${icon('x')} Clear</button>`}
     </div>
     ${readOnly ? `<div class="callout warn">${icon('info')}<div>This post is already published and can't be changed. <a href="#" id="dup">Duplicate it</a> to post it again.</div></div>` : ''}
@@ -66,24 +61,16 @@ export async function render(root, params) {
 
         <section class="card card-pad when-box">
           <div class="seg" id="mode">
-            <button data-m="now">${icon('send')} Post now</button>
-            <button data-m="schedule">${icon('clock')} Schedule</button>
             <button data-m="queue">${icon('queue')} Add to queue</button>
-            <button data-m="draft">${icon('draft')} Save draft</button>
+            <button data-m="now">${icon('send')} Post now</button>
           </div>
           <div id="whenDetail"></div>
-          <div class="divider"></div>
-          <label class="check"><span class="switch"><input type="checkbox" id="recycle"><span></span></span> ${icon('recycle')} Evergreen — repost this automatically</label>
-          <div class="row" id="recycleBox">
-            <span class="text-2 small">every</span><input type="number" id="rDays" min="1" max="365" style="width:80px"><span class="text-2 small">days,</span>
-            <input type="number" id="rLeft" min="1" max="100" placeholder="∞" style="width:80px"><span class="text-2 small">more times (empty = forever)</span>
-          </div>
           <details ${s.notes ? 'open' : ''}><summary class="small text-2" style="cursor:pointer">Private notes</summary><textarea id="notes" rows="2" placeholder="Only you see this" style="margin-top:8px"></textarea></details>
         </section>
 
         <div class="problems" id="problems"></div>
         <div class="footer-bar">
-          ${s.id ? `<a class="btn ghost" href="#/posts">Cancel</a>` : ''}
+          ${s.id ? `<a class="btn ghost" href="#/queue">Cancel</a>` : ''}
           <button class="btn primary" id="submit">Post now</button>
         </div>
       </div>
@@ -95,15 +82,12 @@ export async function render(root, params) {
   ta.value = s.text;
   $('#notes', root).value = s.notes;
   $('#customize', root).checked = s.customize;
-  $('#recycle', root).checked = s.recycle;
-  $('#rDays', root).value = s.recycleDays;
-  $('#rLeft', root).value = s.recycleLeft;
 
   const selected = () => [...s.accountIds].map(accountById).filter(Boolean);
   const textFor = (acc) => (s.customize && s.overrides[acc.id] !== undefined ? s.overrides[acc.id] : s.text);
   const persist = debounce(() => {
     if (s.id) return;
-    store.set({ text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.overrides, customize: s.customize, mode: s.mode, when: s.when, notes: s.notes });
+    store.set({ text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.overrides, customize: s.customize, mode: s.mode, notes: s.notes });
   }, 400);
 
   // ---------- accounts
@@ -112,7 +96,7 @@ export async function render(root, params) {
     $('#accs', root).innerHTML = accs.length
       ? accs.map((a) => `<button type="button" class="chip ${s.accountIds.has(a.id) ? 'on' : ''} ${a.status !== 'ok' ? 'warn' : ''}" data-id="${a.id}" aria-pressed="${s.accountIds.has(a.id)}" data-tip="${esc(`${netLabel(a.type)} · ${a.handle || a.name}${a.status !== 'ok' ? ' · needs attention' : ''}`)}">${avatar(a, 'sm')}<span class="ellipsis" style="max-width:150px">${esc(a.name)}</span></button>`).join('')
         + (accs.length > 1 ? `<button type="button" class="btn ghost sm" id="all">${s.accountIds.size === accs.length ? 'None' : 'All'}</button>` : '')
-      : `<div class="callout">${icon('info')}<div>No accounts yet. <a href="#/accounts">Connect your first account</a> — or save this as a draft for now.</div></div>`;
+      : `<div class="callout">${icon('info')}<div>No accounts yet. <a href="#/accounts">Connect your first account</a> — you can still add this to your queue and pick accounts later.</div></div>`;
     $('#selCount', root).textContent = s.accountIds.size ? `${s.accountIds.size} selected` : '';
   }
   $('#accs', root).onclick = (e) => {
@@ -153,7 +137,7 @@ export async function render(root, params) {
   const checkProblems = debounce(async () => {
     const box = $('#problems', root);
     if (!box) return;
-    if (s.mode === 'draft' || !s.accountIds.size || (!s.text.trim() && !s.media.length)) { box.innerHTML = ''; return; }
+    if (!s.accountIds.size || (!s.text.trim() && !s.media.length)) { box.innerHTML = ''; return; }
     try {
       const { problems } = await api('/posts/check', { method: 'POST', body: payload() });
       box.innerHTML = problems.map((p) => `<div class="problem">${icon('alert')}<span>${esc(p)}</span></div>`).join('');
@@ -208,7 +192,7 @@ export async function render(root, params) {
     for (const f of files) {
       s.uploads++; renderThumbs();
       try {
-        const m = await api('/media', { raw: f, headers: { 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name || 'pasted.png') }, onProgress: (p) => { const bars = $$('.thumb.uploading .bar', root); if (bars[0]) bars[0].style.width = `${Math.round(p * 100)}%`; } });
+        const m = await uploadFile(f, (p) => { const bars = $$('.thumb.uploading .bar', root); if (bars[0]) bars[0].style.width = `${Math.round(p * 100)}%`; });
         s.media.push(m);
       } catch (e) { toastError(e); }
       s.uploads--; renderThumbs(); update();
@@ -309,53 +293,19 @@ export async function render(root, params) {
     { label: 'Custom instruction…', onClick: () => askThen('Tell the AI what to do', 'e.g. translate to Spanish, or add a call to action', (v) => runAi({ action: 'custom', instruction: v, text: s.text })) },
   ]);
 
-  // ---------- when
-  async function bestTimes() {
-    if (!bestCache || Date.now() - bestCache.at > 5 * 60e3) {
-      try { const a = await api('/analytics?days=90'); bestCache = { at: Date.now(), ...a.bestTimes }; } catch { bestCache = { at: Date.now(), source: 'typical', times: [] }; }
-    }
-    return bestCache;
-  }
-  const nextOccurrence = (dow, hour) => {
-    const now = zoned(new Date().toISOString());
-    for (let i = 0; i < 8; i++) {
-      const d = new Date(Date.UTC(now.y, now.m - 1, now.d + i));
-      if (d.getUTCDay() !== dow) continue;
-      const t = fromZoned(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), hour, 0);
-      if (t > new Date()) return t.toISOString();
-    }
-    return null;
-  };
-  async function renderWhen() {
+  // ---------- queue or post now
+  function renderWhen() {
     $$('#mode button', root).forEach((b) => b.classList.toggle('on', b.dataset.m === s.mode));
-    const box = $('#whenDetail', root);
     const n = s.accountIds.size;
-    const label = { now: 'Post now', schedule: 'Schedule', queue: 'Add to queue', draft: 'Save draft' }[s.mode];
-    $('#submit', root).textContent = s.id ? (s.mode === 'now' ? 'Update & post now' : s.mode === 'draft' ? 'Save as draft' : 'Update') : label;
-    if (s.mode === 'now') box.innerHTML = `<p class="text-2 small">Publishes right away${n ? ` to ${n} account${n > 1 ? 's' : ''}` : ''}.</p>`;
-    if (s.mode === 'draft') box.innerHTML = `<p class="text-2 small">Saved without a date. Accounts are optional — finish it later from Posts → Drafts.</p>`;
-    if (s.mode === 'queue') {
-      box.innerHTML = state.slots.length
-        ? `<p class="text-2 small">Goes into your next free posting time: <b>${state.nextSlot ? fmt.dateTime(state.nextSlot) : '—'}</b>. <a href="#/settings?s=schedule">Edit times</a></p>`
-        : `<div class="callout">${icon('info')}<div>Set your weekly posting times once, then just “Add to queue”. <a href="#/settings?s=schedule">Set up posting times</a></div></div>`;
-    }
-    if (s.mode === 'schedule') {
-      if (!s.when) { const t = new Date(Date.now() + 3600e3); t.setMinutes(0, 0, 0); s.when = toLocalInput(t.toISOString()); }
-      box.innerHTML = `<div class="row"><input type="datetime-local" id="when" value="${esc(s.when)}" style="max-width:240px"><span class="muted small">${esc(state.user.tz)}</span></div><div class="best" id="best"><span class="muted small">Loading best times…</span></div>`;
-      $('#when', box).onchange = (e) => { s.when = e.target.value; persist(); };
-      const b = await bestTimes();
-      const el = $('#best', box); if (!el) return;
-      const quick = [['In 1 hour', new Date(Date.now() + 3600e3).toISOString()], ['Tomorrow 9:00', nextOccurrence((zoned(new Date().toISOString()).dow + 1) % 7, 9)]];
-      el.innerHTML = `<span class="muted small">${b.source === 'yours' ? 'Your best times:' : 'Good times:'}</span>`
-        + b.times.map((t) => { const iso = nextOccurrence(t.dow, t.hour); return iso ? `<button class="chip plain" data-iso="${iso}" data-tip="${b.source === 'yours' ? 'Based on your engagement' : 'Typical high-engagement time'}">${DAYS[t.dow]} ${String(t.hour).padStart(2, '0')}:00</button>` : ''; }).join('')
-        + quick.map(([l, iso]) => `<button class="chip plain" data-iso="${iso}">${l}</button>`).join('');
-      el.onclick = (e) => { const c = e.target.closest('[data-iso]'); if (!c) return; s.when = toLocalInput(c.dataset.iso); $('#when', box).value = s.when; persist(); };
-    }
+    $('#whenDetail', root).innerHTML = s.mode === 'now'
+      ? `<p class="text-2 small">Publishes right away${n ? ` to ${n} account${n > 1 ? 's' : ''}` : ''} — you'll see the result in a few seconds.</p>`
+      : `<p class="text-2 small">Saved to your queue${state.counts.queued ? ` (${state.counts.queued} already waiting)` : ''}. Post it with one click whenever you're ready — Analytics shows your best times.</p>`;
+    $('#submit', root).innerHTML = s.id
+      ? (s.mode === 'now' ? `${icon('send')} Save & post now` : 'Save changes')
+      : (s.mode === 'now' ? `${icon('send')} Post now` : `${icon('queue')} Add to queue`);
     checkProblems();
   }
   $('#mode', root).onclick = (e) => { const b = e.target.closest('button'); if (!b) return; s.mode = b.dataset.m; renderWhen(); persist(); };
-  const syncRecycle = () => { $('#recycleBox', root).hidden = !$('#recycle', root).checked; };
-  $('#recycle', root).onchange = syncRecycle; syncRecycle();
 
   // ---------- submit
   function payload() {
@@ -363,27 +313,18 @@ export async function render(root, params) {
   }
   $('#submit', root).onclick = busy($('#submit', root), async () => {
     if (s.uploads) return toast('Wait for uploads to finish');
-    const body = {
-      ...payload(), notes: s.notes,
-      recycleDays: $('#recycle', root).checked ? Number($('#rDays', root).value) || 7 : null,
-      recycleLeft: $('#recycle', root).checked && $('#rLeft', root).value ? Number($('#rLeft', root).value) : null,
-    };
-    if (s.mode === 'now') body.publishNow = true;
-    if (s.mode === 'queue') body.queue = true;
-    if (s.mode === 'draft') body.scheduledAt = null;
-    if (s.mode === 'schedule') {
-      if (!s.when) throw new Error('Pick a date and time');
-      body.scheduledAt = fromLocalInput(s.when);
-      if (new Date(body.scheduledAt) < new Date(Date.now() - 60e3)) throw new Error('That time is in the past');
-    }
+    const body = { ...payload(), notes: s.notes, publishNow: s.mode === 'now' };
     try {
       const p = s.id ? await api(`/posts/${s.id}`, { method: 'PUT', body }) : await api('/posts', { method: 'POST', body });
       store.clear();
       if (!s.id) store.set({ accountIds: [...s.accountIds] }); // remember the account selection
-      const msg = { now: 'Publishing…', schedule: `Scheduled for ${fmt.dateTime(p.scheduled_at)}`, queue: `Queued for ${fmt.dateTime(p.scheduled_at)}`, draft: 'Draft saved' }[s.mode];
-      toast(msg, 'ok');
+      if (s.mode === 'now') {
+        const ok = p.deliveries.filter((d) => d.status === 'published').length, bad = p.deliveries.filter((d) => d.status === 'failed');
+        if (bad.length) toast(`Posted to ${ok} of ${p.deliveries.length}. Failed: ${bad.map((d) => `${d.account_name} (${d.error})`).join('; ')}`, 'bad');
+        else toast(`Posted to ${ok} account${ok === 1 ? '' : 's'} ✓`, 'ok');
+      } else toast(s.id ? 'Saved' : 'Added to your queue', 'ok');
       await refresh();
-      go(s.mode === 'now' ? '#/posts?tab=all' : s.mode === 'draft' ? '#/posts?tab=draft' : '#/calendar');
+      go(s.mode === 'now' ? `#/queue?tab=${p.status === 'published' ? 'published' : 'failed'}` : '#/queue');
     } catch (e) {
       if (e.data?.problems) $('#problems', root).innerHTML = e.data.problems.map((p) => `<div class="problem">${icon('alert')}<span>${esc(p)}</span></div>`).join('');
       throw e;

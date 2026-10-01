@@ -17,17 +17,17 @@ export const connector = {
   async start({ input, redirectUri, state, store }) {
     const base = normalize(input.instance);
     const key = `${base}|${redirectUri}`;
-    let app = store.get(key);
+    let app = await store.get(key);
     if (!app) {
       const { data } = await request(`${base}/api/v1/apps`, { json: { client_name: 'Social Poster', redirect_uris: redirectUri, scopes: 'read write' } });
       app = { clientId: data.client_id, clientSecret: data.client_secret };
-      store.set(key, app);
+      await store.set(key, app);
     }
     const url = `${base}/oauth/authorize?` + new URLSearchParams({ client_id: app.clientId, redirect_uri: redirectUri, response_type: 'code', scope: 'read write', state });
     return { url, data: { base } };
   },
   async callback({ code, redirectUri, data, store }) {
-    const app = store.get(`${data.base}|${redirectUri}`);
+    const app = await store.get(`${data.base}|${redirectUri}`);
     if (!app) throw new ProviderError('400 app registration missing, try again', 400);
     const { data: tok } = await request(`${data.base}/oauth/token`, {
       form: { grant_type: 'authorization_code', code, client_id: app.clientId, client_secret: app.clientSecret, redirect_uri: redirectUri, scope: 'read write' },

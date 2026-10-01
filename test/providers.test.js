@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup, fakeServer, chunks, PNG, JPEG } from './helpers.js';
+import { setup, fakeServer, chunks, PNG, JPEG, closeAll } from './helpers.js';
 import * as X from '../src/providers/x.js';
 import * as LI from '../src/providers/linkedin.js';
 import * as META from '../src/providers/meta.js';
@@ -8,11 +8,8 @@ import * as TH from '../src/providers/threads.js';
 import * as SIMPLE from '../src/providers/simple.js';
 import * as BSKY from '../src/providers/bluesky.js';
 
-const publishOne = async (svc, uid, acc, body = {}) => {
-  const p = svc.createPost(uid, { text: 'hello #world https://ex.com', accountIds: [acc.id], publishNow: true, ...body });
-  await svc.runDue();
-  return svc.getPost(uid, p.id);
-};
+after(closeAll);
+const publishOne = (svc, uid, acc, body = {}) => svc.createPost(uid, { text: 'hello #world https://ex.com', accountIds: [acc.id], publishNow: true, ...body });
 
 test('Mastodon: login flow registers an app automatically, then posts with media', async () => {
   const fake = await fakeServer({
@@ -24,7 +21,7 @@ test('Mastodon: login flow registers an app automatically, then posts with media
     'POST /api/v1/statuses': { id: 's1', url: 'https://m/@me/s1' },
     'GET /api/v1/statuses/s1': { favourites_count: 5, reblogs_count: 2, replies_count: 1 },
   });
-  const { svc, oauth, analytics, u1 } = setup();
+  const { svc, oauth, analytics, u1 } = await setup();
   const { url } = await oauth.start(u1, 'mastodon', { instance: fake.url });
   const u = new URL(url);
   assert.equal(u.searchParams.get('client_id'), 'cid');
@@ -35,14 +32,14 @@ test('Mastodon: login flow registers an app automatically, then posts with media
   assert.equal(r.accounts[0].handle, `@me@${new URL(fake.url).host}`);
   await assert.rejects(oauth.callback('mastodon', { code: 'c', state: u.searchParams.get('state') }), /expired/, 'state is single-use');
   const m = await svc.media.save(u1, chunks(PNG), { filename: 'p.png' });
-  svc.media.setAlt(u1, m.id, 'a cat');
+  await svc.media.setAlt(u1, m.id, 'a cat');
   const post = await publishOne(svc, u1, r.accounts[0], { media: [m.id] });
   assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
   assert.equal(post.deliveries[0].remote_url, 'https://m/@me/s1');
   assert.match(fake.find('POST', '/api/v2/media')[0].raw, /a cat/);
   assert.deepEqual(fake.find('POST', '/api/v1/statuses')[0].json.media_ids, ['m1']);
   await analytics.refreshMetrics({ uid: u1 });
-  assert.deepEqual(svc.getPost(u1, post.id).deliveries[0].metrics, { likes: 5, reposts: 2, replies: 1 });
+  assert.deepEqual((await svc.getPost(u1, post.id)).deliveries[0].metrics, { likes: 5, reposts: 2, replies: 1 });
   await fake.close();
 });
 
@@ -55,9 +52,9 @@ test('X: PKCE login, token refresh before posting, image upload', async () => {
     'POST /2/tweets': { data: { id: '99' } },
   });
   Object.assign(X.endpoints, { api: fake.url, authorize: `${fake.url}/authorize` });
-  const { svc, oauth, u1 } = setup();
+  const { svc, oauth, u1 } = await setup();
   await assert.rejects(oauth.start(u1, 'x'), /Set up your X/);
-  svc.settings.update(u1, { apps: { x: { clientId: 'cid', clientSecret: 'sec' } } });
+  await svc.settings.update(u1, { apps: { x: { clientId: 'cid', clientSecret: 'sec' } } });
   const { url } = await oauth.start(u1, 'x');
   const u = new URL(url);
   assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
@@ -67,7 +64,7 @@ test('X: PKCE login, token refresh before posting, image upload', async () => {
   assert.equal(tokenCall.headers.authorization, 'Basic ' + Buffer.from('cid:sec').toString('base64'));
   assert.ok(tokenCall.form.code_verifier.length >= 43);
   const m = await svc.media.save(u1, chunks(PNG), { filename: 'p.png' });
-  svc.media.setAlt(u1, m.id, 'alt text');
+  await svc.media.setAlt(u1, m.id, 'alt text');
   const post = await publishOne(svc, u1, acc, { media: [m.id] });
   assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
   assert.equal(fake.find('POST', '/2/oauth2/token')[1].form.grant_type, 'refresh_token', 'expired token refreshed');
@@ -87,8 +84,8 @@ test('LinkedIn: posts with escaped text and an uploaded image', async () => {
     'POST /rest/posts': { status: 201, headers: { 'x-restli-id': 'urn:li:share:5' }, body: '' },
   });
   Object.assign(LI.endpoints, { oauth: `${fake.url}/oauth/v2`, api: fake.url });
-  const { svc, oauth, u1 } = setup();
-  svc.settings.update(u1, { apps: { linkedin: { clientId: 'cid', clientSecret: 'sec' } } });
+  const { svc, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { linkedin: { clientId: 'cid', clientSecret: 'sec' } } });
   const { url } = await oauth.start(u1, 'linkedin');
   const { accounts: [acc] } = await oauth.callback('linkedin', { code: 'c', state: new URL(url).searchParams.get('state') });
   fake.calls.length = 0;
@@ -119,8 +116,8 @@ test('Meta: one login adds Facebook Pages and linked Instagram accounts; Instagr
     'POST /v23.0/P1/feed': { id: 'P1_55' },
   });
   Object.assign(META.endpoints, { www: fake.url, graph: fake.url, video: fake.url });
-  const { svc, oauth, u1 } = setup();
-  svc.settings.update(u1, { apps: { meta: { clientId: 'app', clientSecret: 'sec' } } });
+  const { svc, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { meta: { clientId: 'app', clientSecret: 'sec' } } });
   const { url } = await oauth.start(u1, 'meta');
   const { accounts } = await oauth.callback('meta', { code: 'c', state: new URL(url).searchParams.get('state') });
   assert.deepEqual(accounts.map((a) => a.type), ['facebook', 'instagram']);
@@ -132,7 +129,7 @@ test('Meta: one login adds Facebook Pages and linked Instagram accounts; Instagr
   // without a public HTTPS address Instagram can't fetch media
   let post = await publishOne(svc, u1, accounts[1], { media: [m1.id, m2.id] });
   assert.match(post.deliveries[0].error, /public HTTPS address/);
-  svc.settings.update(u1, { publicUrl: 'https://poster.example.com' });
+  await svc.settings.update(u1, { publicUrl: 'https://poster.example.com' });
   post = await publishOne(svc, u1, accounts[1], { media: [m1.id, m2.id] });
   assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
   const containers = fake.find('POST', '/v23.0/IG1/media');
@@ -153,8 +150,8 @@ test('Threads: text post via container + publish', async () => {
     'GET /v1.0/T1': { permalink: 'https://threads.net/@me/post/T1' },
   });
   Object.assign(TH.endpoints, { auth: fake.url, graph: fake.url });
-  const { svc, oauth, u1 } = setup();
-  svc.settings.update(u1, { apps: { threads: { clientId: 'a', clientSecret: 's' } } });
+  const { svc, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { threads: { clientId: 'a', clientSecret: 's' } } });
   const { url } = await oauth.start(u1, 'threads');
   const { accounts: [acc] } = await oauth.callback('threads', { code: 'c', state: new URL(url).searchParams.get('state') });
   const post = await publishOne(svc, u1, acc);
@@ -171,7 +168,7 @@ test('Telegram: verifies chat, sends media group and a separate long message', a
     'POST /botTOKEN/sendMessage': { ok: true, result: { message_id: 12 } },
   });
   SIMPLE.endpoints.telegram = fake.url;
-  const { svc, u1 } = setup();
+  const { svc, u1 } = await setup();
   const acc = await svc.addAccount(u1, { type: 'telegram', config: { token: 'TOKEN', chatId: '@mychan' } });
   assert.equal(acc.name, 'My Channel');
   const a = await svc.media.save(u1, chunks(PNG), { filename: 'a.png' });
@@ -193,7 +190,7 @@ test('Bluesky: facets, image embed, size limit', async () => {
     'POST /xrpc/com.atproto.repo.createRecord': { uri: 'at://did:plc:me/app.bsky.feed.post/3abc' },
   });
   BSKY.endpoints.appview = fake.url;
-  const { svc, u1 } = setup();
+  const { svc, u1 } = await setup();
   const acc = await svc.addAccount(u1, { type: 'bluesky', config: { handle: 'me.bsky.social', password: 'app-pw', service: fake.url } });
   assert.equal(acc.name, 'Me');
   const m = await svc.media.save(u1, chunks(PNG), { filename: 'a.png' });
@@ -211,9 +208,9 @@ test('AI assistant uses the official SDK with server-side fallback and structure
     'POST /v1/messages': { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: JSON.stringify({ options: ['One', 'Two', 'Three'] }) }] },
   });
   process.env.ANTHROPIC_BASE_URL = fake.url;
-  const { svc, ai, u1 } = setup();
+  const { svc, ai, u1 } = await setup();
   await assert.rejects(ai.assist(u1, { action: 'improve', text: 'hi' }), /API key/);
-  svc.settings.update(u1, { ai: { apiKey: 'sk-test' } });
+  await svc.settings.update(u1, { ai: { apiKey: 'sk-test' } });
   const r = await ai.assist(u1, { action: 'improve', text: 'hello world', networks: ['x', 'bluesky'] });
   assert.deepEqual(r.options, ['One', 'Two', 'Three']);
   const call = fake.calls[0];
@@ -222,7 +219,7 @@ test('AI assistant uses the official SDK with server-side fallback and structure
   assert.match(call.headers['anthropic-beta'], /server-side-fallback-2026-07-01/);
   assert.equal(call.json.output_config.format.type, 'json_schema');
   assert.match(call.json.messages[0].content, /fit in 280 characters/);
-  svc.settings.update(u1, { ai: { model: 'claude-haiku-4-5' } });
+  await svc.settings.update(u1, { ai: { model: 'claude-haiku-4-5' } });
   await ai.assist(u1, { action: 'write', instruction: 'coffee' });
   assert.equal(fake.calls[1].json.fallbacks, undefined, 'fallbacks only sent for models that support it');
   delete process.env.ANTHROPIC_BASE_URL;

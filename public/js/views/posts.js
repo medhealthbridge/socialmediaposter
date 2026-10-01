@@ -1,27 +1,42 @@
-import { $, $$, api, esc, icon, toast, modal, debounce, params, go } from '../core.js';
-import { postItem, postAction } from './postcard.js';
+import { $, api, state, esc, icon, toast, modal, debounce, refreshCounts, busy } from '../core.js';
+import { postItem, postAction, publishToast } from './postcard.js';
 
-const TABS = [['scheduled', 'Scheduled'], ['draft', 'Drafts'], ['published', 'Published'], ['failed', 'Needs attention'], ['all', 'All']];
+const TABS = [['queued', 'Queue'], ['published', 'Published'], ['failed', 'Needs attention'], ['all', 'All']];
 
 export async function render(root, qs) {
-  let tab = TABS.some(([k]) => k === qs.get('tab')) ? qs.get('tab') : 'scheduled';
+  let tab = TABS.some(([k]) => k === qs.get('tab')) ? qs.get('tab') : 'queued';
   let search = '';
   root.innerHTML = `<div class="page">
-    <div class="page-head"><div class="grow"><h1>Posts</h1><p class="sub">Everything you've planned and published.</p></div>
-      <input type="search" id="q" placeholder="Search posts…" style="max-width:240px" aria-label="Search">
+    <div class="page-head"><div class="grow"><h1>Queue</h1><p class="sub">Your posts wait here until you click Post — nothing goes out on its own.</p></div>
+      <input type="search" id="q" placeholder="Search…" style="max-width:220px" aria-label="Search">
       <button class="btn" id="more">${icon('download')} Import / export</button>
       <a class="btn primary" href="#/compose">${icon('plus')} New post</a></div>
+    <div id="hero"></div>
     <div class="card"><div class="tabs" id="tabs" style="padding:0 12px"></div><div class="list" id="list"></div></div>
   </div>`;
 
   async function draw() {
-    const posts = await api(`/posts?${new URLSearchParams({ ...(tab !== 'all' && { status: tab }), ...(search && { q: search }), limit: 300 })}`);
-    $('#tabs', root).innerHTML = TABS.map(([k, l]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l}${k === tab ? `<span class="n">${posts.length}</span>` : ''}</button>`).join('');
-    const empty = { scheduled: ['Nothing scheduled yet', 'Plan your next post and it will show up here.'], draft: ['No drafts', 'Save ideas as drafts to finish later.'], published: ['Nothing published yet', ''], failed: ['All good', 'No failed posts.'], all: ['No posts yet', ''] }[tab];
-    $('#list', root).innerHTML = posts.length ? posts.map(postItem).join('')
-      : `<div class="empty">${icon(tab === 'failed' ? 'check' : 'list')}<b>${empty[0]}</b><span>${search ? 'Try a different search.' : empty[1]}</span>${tab !== 'failed' ? `<a class="btn primary" href="#/compose">${icon('plus')} Create post</a>` : ''}</div>`;
+    const [posts, counts] = await Promise.all([
+      api(`/posts?${new URLSearchParams({ ...(tab !== 'all' && { status: tab }), ...(search && { q: search }), limit: 300 })}`),
+      api('/counts'),
+    ]);
+    state.counts = counts;
+    window.dispatchEvent(new Event('state'));
+    const next = tab === 'queued' && !search ? posts[0] : null;
+    $('#hero', root).innerHTML = counts.queued ? `<div class="card queue-hero">
+        <div><div class="big">${counts.queued}</div><div class="text-2 small">post${counts.queued === 1 ? '' : 's'} waiting</div></div>
+        <div class="grow" style="min-width:200px">${next ? `<div class="small muted">Up next</div><div class="ellipsis bold">${esc(next.text.slice(0, 140)) || '(media only)'}</div>` : '<div class="text-2 small">Ready when you are.</div>'}</div>
+        <button class="btn primary" id="postNext">${icon('send')} Post next</button></div>` : '';
+    $('#postNext', root)?.addEventListener('click', (e) => busy(e.currentTarget, async () => { publishToast(await api('/queue/next', { method: 'POST' })); await refreshCounts(); await draw(); })());
+    $('#tabs', root).innerHTML = TABS.map(([k, l]) => {
+      const n = k === 'queued' ? counts.queued : k === 'failed' ? counts.failed : k === 'published' ? counts.published : null;
+      return `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l}${n ? `<span class="n">${n}</span>` : ''}</button>`;
+    }).join('');
+    const empty = { queued: ['Your queue is empty', 'Write a few posts now, then publish them with one click whenever you like.'], published: ['Nothing published yet', ''], failed: ['All good', 'No failed posts.'], all: ['No posts yet', ''] }[tab];
+    $('#list', root).innerHTML = posts.length ? posts.map((p, i) => postItem(p, tab === 'queued' && !search ? i + 1 : 0)).join('')
+      : `<div class="empty">${icon(tab === 'failed' ? 'check' : 'queue')}<b>${empty[0]}</b><span>${search ? 'Try a different search.' : empty[1]}</span>${tab !== 'failed' ? `<a class="btn primary" href="#/compose">${icon('plus')} Create post</a>` : ''}</div>`;
   }
-  $('#tabs', root).onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { tab = b.dataset.t; history.replaceState(null, '', `#/posts?tab=${tab}`); draw(); } };
+  $('#tabs', root).onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { tab = b.dataset.t; history.replaceState(null, '', `#/queue?tab=${tab}`); draw(); } };
   $('#list', root).onclick = (e) => postAction(e, draw);
   $('#q', root).oninput = debounce((e) => { search = e.target.value.trim(); draw(); }, 250);
   $('#more', root).onclick = () => importExport(draw);
@@ -30,9 +45,9 @@ export async function render(root, qs) {
 
 function importExport(after) {
   modal({ title: 'Import & export', wide: true, body: `
-    <h3>Bulk schedule from CSV</h3>
-    <p class="text-2 small">Up to 500 posts. Columns: <code>text</code>, <code>scheduled_at</code> (e.g. <code>2026-11-02T09:00</code> in your timezone, <code>queue</code> for the next free slot, or empty for a draft), <code>accounts</code> (account names separated by <code>;</code>).</p>
-    <textarea id="csv" rows="7" style="font-family:ui-monospace,monospace;font-size:12.5px" placeholder='text,scheduled_at,accounts\n"Hello world!",2026-11-02T09:00,"My Bluesky;My Mastodon"\n"Another one",queue,"My Bluesky"'></textarea>
+    <h3>Add many posts from a CSV</h3>
+    <p class="text-2 small">Up to 500 rows, added to the end of your queue. Columns: <code>text</code> and <code>accounts</code> (account names separated by <code>;</code>).</p>
+    <textarea id="csv" rows="7" style="font-family:ui-monospace,monospace;font-size:12.5px" placeholder='text,accounts\n"Hello world!","My Bluesky;My Mastodon"\n"Another one","My Bluesky"'></textarea>
     <div class="row"><input type="file" id="csvFile" accept=".csv,text/csv" style="max-width:260px"><span class="grow"></span><button class="btn primary" id="doImport">${icon('upload')} Import</button></div>
     <div id="importRes"></div>
     <div class="divider"></div>
@@ -44,13 +59,9 @@ function importExport(after) {
     $('#doImport', d).onclick = async (e) => {
       const b = e.currentTarget; b.classList.add('loading');
       try {
-        const csv = $('#csv', d).value;
-        // scheduled_at values are in the user's timezone: convert to ISO before sending.
-        const { fromLocalInput } = await import('../core.js');
-        const fixed = csv.replace(/(^|,)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})(?=,|$)/gm, (_, pre, v) => pre + fromLocalInput(v.replace(' ', 'T')));
-        const r = await api('/bulk', { method: 'POST', raw: fixed, headers: { 'content-type': 'text/csv' } });
-        $('#importRes', d).innerHTML = `<div class="callout">${icon('check')}<div><b>${r.created} post${r.created === 1 ? '' : 's'} created.</b>${r.errors.map((x) => `<div class="small" style="color:var(--bad)">Row ${x.row}: ${esc(x.error)}</div>`).join('')}</div></div>`;
-        if (r.created) after();
+        const r = await api('/bulk', { method: 'POST', raw: $('#csv', d).value, headers: { 'content-type': 'text/csv' } });
+        $('#importRes', d).innerHTML = `<div class="callout">${icon('check')}<div><b>${r.created} post${r.created === 1 ? '' : 's'} added to your queue.</b>${r.errors.map((x) => `<div class="small" style="color:var(--bad)">Row ${x.row}: ${esc(x.error)}</div>`).join('')}</div></div>`;
+        if (r.created) { await refreshCounts(); after(); }
       } catch (err) { toast(err.message, 'bad'); } finally { b.classList.remove('loading'); }
     };
   } });

@@ -29,74 +29,78 @@ export function parseFeed(xml) {
 }
 
 export function createFeeds(svc) {
-  const q = (s) => svc.db.prepare(s);
+  const db = svc.db;
   const view = (f) => ({ ...f, account_ids: JSON.parse(f.account_ids), seen: undefined, enabled: !!f.enabled });
+  const UA = { 'user-agent': 'SocialPoster/1.0 (+RSS)', accept: 'application/rss+xml, application/atom+xml, text/xml, */*' };
 
   const feeds = {
-    list: (uid) => q('SELECT * FROM feeds WHERE user_id=? ORDER BY id').all(uid).map(view),
-    get(uid, id) {
-      const f = q('SELECT * FROM feeds WHERE id=? AND user_id=?').get(id, uid);
+    list: async (uid) => (await db.all('SELECT * FROM feeds WHERE user_id=? ORDER BY id', uid)).map(view),
+    async get(uid, id) {
+      const f = await db.get('SELECT * FROM feeds WHERE id=? AND user_id=?', id, uid);
       if (!f) throw httpError(404, 'feed not found');
       return f;
     },
-    clean(uid, b) {
+    async clean(uid, b) {
       const accountIds = [...new Set((b.accountIds || []).map(Number))];
-      for (const a of accountIds) if (!q('SELECT 1 FROM accounts WHERE id=? AND user_id=?').get(a, uid)) throw httpError(400, 'unknown account');
-      const mode = ['draft', 'queue', 'now'].includes(b.mode) ? b.mode : 'draft';
-      if (mode !== 'draft' && !accountIds.length) throw httpError(400, 'pick the accounts to post to');
-      const template = String(b.template || '{title}\n{link}').slice(0, 2000);
-      const interval = Math.min(1440, Math.max(10, Number(b.intervalMin) || 30));
-      return { accountIds, mode, template, interval };
+      for (const a of accountIds) if (!(await db.get('SELECT 1 FROM accounts WHERE id=? AND user_id=?', a, uid))) throw httpError(400, 'unknown account');
+      const mode = b.mode === 'now' ? 'now' : 'queue';
+      if (mode === 'now' && !accountIds.length) throw httpError(400, 'pick the accounts to post to');
+      return { accountIds, mode, template: String(b.template || '{title}\n{link}').slice(0, 2000), interval: Math.min(1440, Math.max(10, Number(b.intervalMin) || 60)) };
     },
     async add(uid, b) {
       let url;
       try { url = new URL(String(b.url).trim()); if (!/^https?:$/.test(url.protocol)) throw 0; } catch { throw httpError(400, 'enter a valid feed URL'); }
-      const c = feeds.clean(uid, b);
+      const c = await feeds.clean(uid, b);
       let parsed;
-      try { parsed = parseFeed((await request(url.href, { headers: { 'user-agent': 'SocialPoster/1.0 (+RSS)', accept: 'application/rss+xml, application/atom+xml, text/xml, */*' }, timeout: 20_000 })).data.raw); }
+      try { parsed = parseFeed((await request(url.href, { headers: UA, timeout: 20_000 })).data.raw); }
       catch (e) { throw httpError(400, `could not read that feed: ${e.message}`); }
       if (!parsed.items.length && !parsed.title) throw httpError(400, 'that URL is not an RSS or Atom feed');
-      // Existing items are marked as seen, so only future items get posted.
-      const r = q('INSERT INTO feeds(user_id,url,title,account_ids,mode,template,interval_min,seen,last_checked) VALUES (?,?,?,?,?,?,?,?,?)')
-        .run(uid, url.href, parsed.title || url.host, JSON.stringify(c.accountIds), c.mode, c.template, c.interval, JSON.stringify(parsed.items.map((i) => i.id).slice(0, 500)), new Date().toISOString());
-      return view(feeds.get(uid, r.lastInsertRowid));
+      // Existing items are marked as seen, so only future items are posted.
+      const id = await db.insert('INSERT INTO feeds(user_id,url,title,account_ids,mode,template,interval_min,seen,last_checked) VALUES (?,?,?,?,?,?,?,?,?)',
+        uid, url.href, parsed.title || url.host, JSON.stringify(c.accountIds), c.mode, c.template, c.interval, JSON.stringify(parsed.items.map((i) => i.id).slice(0, 500)), new Date().toISOString());
+      return view(await feeds.get(uid, id));
     },
-    update(uid, id, b) {
-      const f = feeds.get(uid, id);
-      const c = feeds.clean(uid, { accountIds: JSON.parse(f.account_ids), mode: f.mode, template: f.template, intervalMin: f.interval_min, ...b });
-      q('UPDATE feeds SET account_ids=?, mode=?, template=?, interval_min=?, enabled=? WHERE id=?')
-        .run(JSON.stringify(c.accountIds), c.mode, c.template, c.interval, b.enabled === undefined ? f.enabled : b.enabled ? 1 : 0, id);
-      return view(feeds.get(uid, id));
+    async update(uid, id, b) {
+      const f = await feeds.get(uid, id);
+      const c = await feeds.clean(uid, { accountIds: JSON.parse(f.account_ids), mode: f.mode, template: f.template, intervalMin: f.interval_min, ...b });
+      await db.run('UPDATE feeds SET account_ids=?, mode=?, template=?, interval_min=?, enabled=? WHERE id=?',
+        JSON.stringify(c.accountIds), c.mode, c.template, c.interval, b.enabled === undefined ? f.enabled : b.enabled ? 1 : 0, id);
+      return view(await feeds.get(uid, id));
     },
-    remove: (uid, id) => q('DELETE FROM feeds WHERE id=? AND user_id=?').run(id, uid),
+    remove: (uid, id) => db.run('DELETE FROM feeds WHERE id=? AND user_id=?', id, uid),
 
+    /** Fetch one feed; new items go to the queue (or are published right away in "now" mode). */
     async poll(f) {
       try {
-        const { data } = await request(f.url, { headers: { 'user-agent': 'SocialPoster/1.0 (+RSS)' }, timeout: 20_000 });
+        const { data } = await request(f.url, { headers: UA, timeout: 20_000 });
         const { items } = parseFeed(data.raw);
         const seen = new Set(JSON.parse(f.seen));
         const fresh = items.filter((i) => !seen.has(i.id)).slice(0, 5).reverse();
+        // Mark as seen first so two overlapping checks never create duplicates.
+        await db.run('UPDATE feeds SET seen=?, last_checked=?, last_error=NULL WHERE id=?',
+          JSON.stringify([...new Set([...items.map((i) => i.id), ...seen])].slice(0, 500)), new Date().toISOString(), f.id);
         let created = 0;
         for (const it of fresh) {
           const text = f.template.replaceAll('{title}', it.title).replaceAll('{link}', it.link).replaceAll('{summary}', it.summary).trim();
-          const body = { text, accountIds: JSON.parse(f.account_ids), ...(f.mode === 'now' ? { publishNow: true } : f.mode === 'queue' ? { queue: true } : {}) };
-          try { svc.createPost(f.user_id, body, { source: 'rss' }); }
-          catch (e) { svc.createPost(f.user_id, { text, accountIds: body.accountIds, notes: `From RSS — could not auto-schedule: ${e.message}` }, { source: 'rss' }); }
+          const accountIds = JSON.parse(f.account_ids);
+          try { await svc.createPost(f.user_id, { text, accountIds, publishNow: f.mode === 'now' }, { source: 'rss' }); }
+          catch (e) { await svc.createPost(f.user_id, { text, accountIds, notes: `From RSS — could not post automatically: ${e.message}` }, { source: 'rss' }); }
           created++;
         }
-        const all = [...items.map((i) => i.id), ...seen].slice(0, 500);
-        q('UPDATE feeds SET seen=?, last_checked=?, last_error=NULL WHERE id=?').run(JSON.stringify([...new Set(all)]), new Date().toISOString(), f.id);
         return created;
       } catch (e) {
-        q('UPDATE feeds SET last_checked=?, last_error=? WHERE id=?').run(new Date().toISOString(), String(e.message).slice(0, 300), f.id);
+        await db.run('UPDATE feeds SET last_checked=?, last_error=? WHERE id=?', new Date().toISOString(), String(e.message).slice(0, 300), f.id);
         return 0;
       }
     },
-    checkNow: async (uid, id) => ({ created: await feeds.poll(feeds.get(uid, id)) }),
-    async runDue(now = new Date()) {
-      const due = q('SELECT * FROM feeds WHERE enabled=1').all().filter((f) => !f.last_checked || new Date(f.last_checked).getTime() + f.interval_min * 60e3 <= now.getTime());
-      for (const f of due) await feeds.poll(f);
-      return due.length;
+    checkNow: async (uid, id) => ({ created: await feeds.poll(await feeds.get(uid, id)) }),
+    /** Check this user's feeds that are due. The app calls this when you open it — no background timer needed. */
+    async checkDue(uid, now = new Date()) {
+      const due = (await db.all('SELECT * FROM feeds WHERE user_id=? AND enabled=1', uid))
+        .filter((f) => !f.last_checked || new Date(f.last_checked).getTime() + f.interval_min * 60e3 <= now.getTime());
+      let created = 0;
+      for (const f of due) created += await feeds.poll(f);
+      return { checked: due.length, created };
     },
   };
   return feeds;

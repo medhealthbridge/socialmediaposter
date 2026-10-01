@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 
 export function loadKey({ env = process.env.SECRET_KEY, file = 'data/secret.key' } = {}) {
   if (env) return createHash('sha256').update(env).digest();
+  if (process.env.VERCEL) throw new Error('Set the SECRET_KEY environment variable in your Vercel project (any long random string) and redeploy.');
   if (existsSync(file)) return Buffer.from(readFileSync(file, 'utf8').trim(), 'hex');
   mkdirSync(dirname(file), { recursive: true });
   const key = randomBytes(32);

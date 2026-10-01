@@ -1,7 +1,7 @@
 import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, busy, confirmBox, copyBox, avatar } from '../core.js';
 import { appSetup } from './accounts.js';
 
-const SECTIONS = [['general', 'General'], ['schedule', 'Posting schedule'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
+const SECTIONS = [['general', 'General'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export async function render(root, qs) {
@@ -15,51 +15,21 @@ export async function render(root, qs) {
       const s = state.settings;
       const tzs = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [state.user.tz];
       return [`<div class="card card-pad form">
-        <h2>Publishing</h2>
-        <label class="check"><span class="switch"><input type="checkbox" id="paused" ${s.paused ? 'checked' : ''}><span></span></span> Pause all publishing</label>
-        <p class="hint" style="margin-top:-8px">Like an emergency brake: scheduled posts wait until you turn this off.</p>
+        <h2>General</h2>
         <label class="field">Your timezone<select id="tz">${tzs.map((t) => `<option ${t === state.user.tz ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
         <label class="field">Failure alerts <span class="hint">send a message here when a post fails (Telegram or Discord work great)</span>
           <select id="alerts"><option value="">Off</option>${state.accounts.map((a) => `<option value="${a.id}" ${s.alertsAccountId === a.id ? 'selected' : ''}>${esc(a.name)} (${esc(state.providers[a.type]?.label)})</option>`).join('')}</select></label>
       </div>
       <div class="card card-pad form">
         <h2>Public address</h2>
-        <p class="text-2">The address where this app is reachable. It's used for login redirects and so Instagram/Threads can fetch your images. Instagram, Facebook and Threads need <b>https://</b>.</p>
+        <p class="text-2">The address where this app is reachable, used for network login redirects${state.storage === 'blob' ? '' : ' and so Instagram/Threads can fetch your images'}. Instagram, Facebook and Threads need <b>https://</b>. On Vercel this is detected automatically.</p>
         <label class="field">Public URL<input type="url" id="pub" value="${esc(s.publicUrl)}" placeholder="${esc(s.effectiveUrl)}"></label>
         <p class="hint">Currently using: <code>${esc(s.effectiveUrl)}</code>${s.publicUrl ? '' : ' (detected from your browser)'}</p>
         <div><button class="btn primary" id="savePub">Save</button></div>
       </div>`, () => {
-        $('#paused').onchange = async (e) => { await save({ paused: e.target.checked }, e.target.checked ? 'Publishing paused' : 'Publishing resumed'); };
         $('#tz').onchange = async (e) => { await api('/me', { method: 'PUT', body: { tz: e.target.value } }); await refresh(); toast('Timezone saved', 'ok'); };
         $('#alerts').onchange = async (e) => save({ alertsAccountId: e.target.value || null });
         $('#savePub').onclick = busy($('#savePub'), async () => { await save({ publicUrl: $('#pub').value }); draw(); });
-      }];
-    },
-    async schedule() {
-      let slots = state.slots.slice();
-      return [`<div class="card card-pad form" style="max-width:none">
-        <h2>Weekly posting times</h2>
-        <p class="text-2">“Add to queue” in the composer drops a post into the next free time below (${esc(state.user.tz)}). Tip: pick times from Analytics → Best time to post.</p>
-        <div class="slot-grid" id="slots"></div>
-        <div class="row"><div class="row" id="dsel">${DAYS.map((d, i) => `<button type="button" class="chip plain" data-d="${i}">${d}</button>`).join('')}</div>
-          <input type="time" id="time" value="09:00" style="width:130px"><button class="btn primary" id="addSlot">${icon('plus')} Add time</button></div>
-        <div class="row"><button class="btn sm ghost" id="preset">Use a starter schedule (weekdays 9:00, 12:30, 17:30)</button><span class="right muted small" id="next"></span></div>
-      </div>`, () => {
-        const drawSlots = () => {
-          $('#slots').innerHTML = DAYS.map((d, i) => `<div class="slot-row"><b class="small">${d}</b><div class="row">${slots.filter((s) => s.dow === i).sort((a, b) => a.time.localeCompare(b.time)).map((s) => `<span class="slot">${s.time}<button data-del="${i}|${s.time}" aria-label="Remove">${icon('x')}</button></span>`).join('') || '<span class="muted small">—</span>'}</div></div>`).join('');
-          $('#next').textContent = state.nextSlot ? `Next free slot: ${fmt.dateTime(state.nextSlot)}` : '';
-        };
-        const put = async (next) => { const r = await api('/slots', { method: 'PUT', body: { slots: next } }); slots = r.slots; state.slots = r.slots; state.nextSlot = r.next; drawSlots(); };
-        drawSlots();
-        $('#dsel').onclick = (e) => e.target.closest('.chip')?.classList.toggle('on');
-        $('#slots').onclick = (e) => { const b = e.target.closest('[data-del]'); if (b) put(slots.filter((s) => `${s.dow}|${s.time}` !== b.dataset.del)); };
-        $('#addSlot').onclick = () => {
-          const ds = $$('#dsel .on').map((c) => Number(c.dataset.d)); const t = $('#time').value;
-          if (!ds.length || !t) return toast('Pick at least one day and a time');
-          const map = new Map(slots.map((s) => [`${s.dow}|${s.time}`, s])); ds.forEach((d) => map.set(`${d}|${t}`, { dow: d, time: t }));
-          put([...map.values()]); $$('#dsel .on').forEach((c) => c.classList.remove('on'));
-        };
-        $('#preset').onclick = () => put([1, 2, 3, 4, 5].flatMap((d) => ['09:00', '12:30', '17:30'].map((time) => ({ dow: d, time }))));
       }];
     },
     integrations() {
@@ -116,9 +86,9 @@ export async function render(root, qs) {
     },
     data() {
       return [`<div class="card card-pad form"><h2>Backup & data</h2>
-        <p class="text-2">Everything lives on your own server in <code>data/</code>: the database (<code>poster.db</code>), the encryption key (<code>secret.key</code>) and uploaded media. Back up the whole folder — without <code>secret.key</code> saved logins can't be decrypted.</p>
+        <p class="text-2">${state.storage === 'blob' ? 'Your data lives in your Postgres database and media in Vercel Blob. Keep your <code>SECRET_KEY</code> environment variable safe — without it saved logins can’t be decrypted.' : 'Everything lives in <code>data/</code>: the database (<code>poster.db</code>), the encryption key (<code>secret.key</code>) and uploaded media. Back up the whole folder — without <code>secret.key</code> saved logins can’t be decrypted.'}</p>
         <div class="row"><a class="btn" href="/api/export.csv" download>${icon('download')} Post history (CSV)</a><a class="btn" href="/api/export.json" download>${icon('download')} Everything (JSON)</a></div>
-        <p class="hint">Bulk-schedule from a CSV under Posts → Import / export.</p></div>`, () => {}];
+        <p class="hint">Add many posts from a CSV under Queue → Import / export.</p></div>`, () => {}];
     },
   };
 

@@ -41,7 +41,7 @@ function heatmap(cells) {
 
 export async function render(root) {
   root.innerHTML = `<div class="page">
-    <div class="page-head"><div class="grow"><h1>Analytics</h1><p class="sub">How your posts are doing. Likes, reposts and replies are refreshed automatically every few hours.</p></div>
+    <div class="page-head"><div class="grow"><h1>Analytics</h1><p class="sub">How your posts are doing. Likes, reposts and replies are fetched from the networks when you open this page.</p></div>
       <div class="seg" id="range">${[7, 30, 90, 365].map((d) => `<button data-d="${d}">${d === 365 ? '1 year' : `${d} days`}</button>`).join('')}</div>
       <button class="btn" id="refresh">${icon('retry')} Refresh metrics</button></div>
     <div id="body" class="col gap-lg"><div class="card card-pad muted">Loading…</div></div>
@@ -57,7 +57,7 @@ export async function render(root) {
         <div class="card kpi"><div class="l">Engagement</div><div class="v">${fmt.num(k.engagement)}</div><div class="s">likes + 2×reposts + 3×replies</div></div>
         <div class="card kpi"><div class="l">Avg. per post</div><div class="v">${k.avgEngagement == null ? '—' : k.avgEngagement.toFixed(1)}</div><div class="s">posts with metrics</div></div>
         <div class="card kpi"><div class="l">Success rate</div><div class="v">${fmt.pct(k.successRate)}</div><div class="s">${k.failed} failed</div></div>
-        <div class="card kpi"><div class="l">Scheduled</div><div class="v">${fmt.num(k.scheduled)}</div><div class="s">upcoming</div></div>
+        <div class="card kpi"><div class="l">In queue</div><div class="v">${fmt.num(k.queued)}</div><div class="s"><a href="#/queue">ready to post</a></div></div>
       </div>
       <div class="card"><div class="card-head"><h2 class="grow">Posts per day</h2></div><div class="card-body">${barChart(s.perDay)}</div></div>
       <div class="grid-2">
@@ -68,7 +68,7 @@ export async function render(root) {
           <table class="tbl" style="margin-top:12px"><thead><tr><th>Network</th><th class="num">Likes</th><th class="num">Reposts</th><th class="num">Replies</th><th class="num">Views</th></tr></thead><tbody>
           ${s.perNetwork.map((n) => `<tr><td>${esc(n.label)}</td><td class="num">${fmt.num(n.likes)}</td><td class="num">${fmt.num(n.reposts)}</td><td class="num">${fmt.num(n.replies)}</td><td class="num">${n.views ? fmt.num(n.views) : '—'}</td></tr>`).join('')}</tbody></table>`
           : '<div class="empty">No published posts in this period.</div>'}</div></div>
-        <div class="card"><div class="card-head"><h2 class="grow">Best time to post</h2><span class="badge nodot">${s.bestTimes.source === 'yours' ? 'from your data' : 'typical — post more to personalize'}</span></div>
+        <div class="card"><div class="card-head"><h2 class="grow">Best times to click Post</h2><span class="badge nodot">${s.bestTimes.source === 'yours' ? 'from your data' : 'typical — post more to personalize'}</span></div>
           <div class="card-body col">${heatmap(s.heatmap)}
           <div class="row small"><span class="text-2">Top times:</span>${s.bestTimes.times.map((t) => `<span class="pill">${DAYS[t.dow]} ${String(t.hour).padStart(2, '0')}:00</span>`).join('')}<span class="muted right">${esc(s.tz)}</span></div></div></div>
       </div>
@@ -81,4 +81,6 @@ export async function render(root) {
   $('#range', root).onclick = (e) => { const b = e.target.closest('button'); if (b) { days = Number(b.dataset.d); draw(); } };
   $('#refresh', root).onclick = busy($('#refresh', root), async () => { const r = await api('/analytics/refresh', { method: 'POST' }); toast(`Updated ${r.updated} of ${r.checked} posts`, 'ok'); await draw(); });
   await draw();
+  // Fetch fresh engagement numbers in the background, then redraw if anything changed.
+  api('/analytics/refresh', { method: 'POST' }).then((r) => { if (r.updated && root.isConnected) draw(); }).catch(() => {});
 }

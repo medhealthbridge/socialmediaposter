@@ -13,13 +13,15 @@ import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
-const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.vercel-storage.com https://vercel.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
-const sameHost = (req) => { try { return new URL(req.headers.origin).host === (req.headers['x-forwarded-host'] || req.headers.host); } catch { return false; } };
-const originOf = (req) => `${req.headers['x-forwarded-proto']?.split(',')[0] || (req.socket.encrypted ? 'https' : 'http')}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+const hostOf = (req) => req.headers['x-forwarded-host'] || req.headers.host;
+const sameHost = (req) => { try { return new URL(req.headers.origin).host === hostOf(req); } catch { return false; } };
+const originOf = (req) => `${req.headers['x-forwarded-proto']?.split(',')[0] || (req.socket?.encrypted ? 'https' : 'http')}://${hostOf(req)}`;
+const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || '';
 
-/** Wires every module together. Exposed for tests. */
-export function createContext(db, opts = {}) {
+/** Wires every module together. */
+export async function createContext(db, opts = {}) {
   const svc = createService(db, opts);
   return { db, svc, auth: createAuth(db, opts), feeds: createFeeds(svc), analytics: createAnalytics(svc), ai: createAI(svc.settings), oauth: createOAuth(svc) };
 }
@@ -33,31 +35,27 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
   };
   const id = (p) => Number(p.id);
 
-  // ---- public
-  r('GET', '/api/auth/status', ({ me }) => ({ needsSetup: auth.userCount() === 0, user: me }), { public: true });
+  r('GET', '/api/auth/status', async ({ me }) => ({ needsSetup: (await auth.userCount()) === 0, user: me }), { public: true });
 
-  // ---- bootstrap (everything the UI needs on load)
-  r('GET', '/api/bootstrap', ({ uid, me, req }) => {
-    svc.settings.noteOrigin(uid, originOf(req));
+  // Everything the UI needs on load. Also refreshes long-lived tokens when needed.
+  r('GET', '/api/bootstrap', async ({ uid, me, req }) => {
+    await svc.settings.noteOrigin(uid, originOf(req));
+    await svc.maintain(uid).catch(() => {});
     return {
-      user: me, providers: publicProviders(), connectors: publicConnectors(), aiModels: AI_MODELS,
-      accounts: svc.listAccounts(uid), settings: svc.settings.view(uid), slots: svc.getSlots(uid),
-      nextSlot: svc.nextSlot(uid), snippets: svc.listSnippets(uid),
+      user: me, providers: publicProviders(), connectors: publicConnectors(), aiModels: AI_MODELS, storage: svc.media.kind,
+      accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
     };
   });
 
-  // ---- me / users
-  r('PUT', '/api/me', ({ uid, body }) => { if (body.tz) auth.setTz(uid, body.tz); return { ok: true }; });
-  r('POST', '/api/me/password', ({ uid, body }) => { auth.changePassword(uid, body.current, body.next); return { ok: true }; });
+  r('PUT', '/api/me', async ({ uid, body }) => { if (body.tz) await auth.setTz(uid, body.tz); return { ok: true }; });
+  r('POST', '/api/me/password', async ({ uid, body }) => { await auth.changePassword(uid, body.current, body.next); return { ok: true }; });
   r('GET', '/api/users', () => auth.listUsers(), { admin: true });
   r('POST', '/api/users', ({ body }) => auth.createUser(body), { admin: true, status: 201 });
   r('DELETE', '/api/users/:id', ({ params }) => auth.deleteUser(id(params)), { admin: true });
 
-  // ---- settings
   r('GET', '/api/settings', ({ uid }) => svc.settings.view(uid));
   r('PUT', '/api/settings', ({ uid, body }) => svc.settings.update(uid, body));
 
-  // ---- accounts
   r('GET', '/api/accounts', ({ uid }) => svc.listAccounts(uid));
   r('POST', '/api/accounts', ({ uid, body }) => svc.addAccount(uid, body), { status: 201 });
   r('PATCH', '/api/accounts/:id', ({ uid, params, body }) => svc.renameAccount(uid, id(params), body.name));
@@ -66,81 +64,98 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
   r('POST', '/api/accounts/:id/test-post', ({ uid, params }) => svc.testPost(uid, id(params)));
   r('POST', '/api/connect/:connector', ({ uid, params, body }) => oauth.start(uid, params.connector, body));
 
-  // ---- posts
-  r('GET', '/api/posts', ({ uid, query }) => svc.listPosts(uid, { from: query.get('from'), to: query.get('to'), status: query.get('status'), q: query.get('q'), limit: query.get('limit') }));
-  r('POST', '/api/posts', ({ uid, body }) => { const p = svc.createPost(uid, body); if (body.publishNow) kick(); return p; }, { status: 201 });
-  r('POST', '/api/posts/check', ({ uid, body }) => ({ problems: svc.problems(uid, { text: body.text || '', media: body.media || [], accountIds: (body.accountIds || []).map(Number), overrides: body.overrides || {} }) }));
+  r('GET', '/api/posts', ({ uid, query }) => svc.listPosts(uid, { status: query.get('status'), q: query.get('q'), limit: query.get('limit') }));
+  r('GET', '/api/counts', ({ uid }) => svc.counts(uid));
+  r('POST', '/api/posts', ({ uid, body }) => svc.createPost(uid, body), { status: 201 });
+  r('POST', '/api/posts/check', async ({ uid, body }) => ({ problems: await svc.problems(uid, { text: body.text || '', media: (body.media || []).map(Number), accountIds: (body.accountIds || []).map(Number), overrides: body.overrides || {} }) }));
+  r('POST', '/api/queue/next', ({ uid }) => svc.publishNext(uid));
   r('GET', '/api/posts/:id', ({ uid, params }) => svc.getPost(uid, id(params)));
-  r('PUT', '/api/posts/:id', ({ uid, params, body }) => { const p = svc.updatePost(uid, id(params), body); if (body.publishNow) kick(); return p; });
+  r('PUT', '/api/posts/:id', ({ uid, params, body }) => svc.updatePost(uid, id(params), body));
   r('DELETE', '/api/posts/:id', ({ uid, params }) => svc.deletePost(uid, id(params)));
-  r('POST', '/api/posts/:id/publish', ({ uid, params }) => { const p = svc.publishNow(uid, id(params)); kick(); return p; });
+  r('POST', '/api/posts/:id/publish', ({ uid, params }) => svc.publish(uid, id(params)));
+  r('POST', '/api/posts/:id/move', ({ uid, params, body }) => svc.move(uid, id(params), body.dir));
   r('POST', '/api/posts/:id/duplicate', ({ uid, params }) => svc.duplicatePost(uid, id(params)), { status: 201 });
   r('POST', '/api/bulk', ({ uid, body }) => svc.bulkImport(uid, body.csv ?? ''));
   r('GET', '/api/export.json', ({ uid }) => svc.exportJson(uid), { download: 'social-poster-export.json' });
   r('GET', '/api/export.csv', ({ uid }) => svc.exportCsv(uid), { download: 'social-poster-history.csv', type: 'text/csv; charset=utf-8' });
 
-  // ---- media
   r('GET', '/api/media', ({ uid }) => svc.media.list(uid));
   r('POST', '/api/media', ({ uid, req }) => svc.media.save(uid, req, { filename: decodeURIComponent(req.headers['x-filename'] || 'upload') }), { raw: true, status: 201 });
+  r('POST', '/api/media/blob-token', ({ uid, body, req }) => svc.media.blobToken(uid, body, req));
+  r('POST', '/api/media/register', ({ uid, body }) => svc.media.register(uid, body), { status: 201 });
   r('PATCH', '/api/media/:id', ({ uid, params, body }) => svc.media.setAlt(uid, id(params), body.alt));
   r('DELETE', '/api/media/:id', ({ uid, params }) => svc.media.remove(uid, id(params)));
 
-  // ---- queue, snippets, feeds
-  r('GET', '/api/slots', ({ uid }) => ({ slots: svc.getSlots(uid), next: svc.nextSlot(uid) }));
-  r('PUT', '/api/slots', ({ uid, body }) => ({ slots: svc.setSlots(uid, body.slots), next: svc.nextSlot(uid) }));
   r('GET', '/api/snippets', ({ uid }) => svc.listSnippets(uid));
   r('POST', '/api/snippets', ({ uid, body }) => svc.saveSnippet(uid, body), { status: 201 });
   r('PUT', '/api/snippets/:id', ({ uid, params, body }) => svc.saveSnippet(uid, { ...body, id: id(params) }));
   r('DELETE', '/api/snippets/:id', ({ uid, params }) => svc.deleteSnippet(uid, id(params)));
+
   r('GET', '/api/feeds', ({ uid }) => feeds.list(uid));
   r('POST', '/api/feeds', ({ uid, body }) => feeds.add(uid, body), { status: 201 });
+  r('POST', '/api/feeds/check-due', ({ uid }) => feeds.checkDue(uid));
   r('PUT', '/api/feeds/:id', ({ uid, params, body }) => feeds.update(uid, id(params), body));
   r('DELETE', '/api/feeds/:id', ({ uid, params }) => feeds.remove(uid, id(params)));
   r('POST', '/api/feeds/:id/check', ({ uid, params }) => feeds.checkNow(uid, id(params)));
 
-  // ---- analytics & AI
   r('GET', '/api/analytics', ({ uid, query }) => analytics.stats(uid, { days: Math.min(365, Math.max(7, Number(query.get('days')) || 30)) }));
-  r('POST', '/api/analytics/refresh', ({ uid }) => analytics.refreshMetrics({ uid, limit: 100 }));
+  r('POST', '/api/analytics/refresh', ({ uid }) => analytics.refreshMetrics({ uid, limit: 40 }));
   r('POST', '/api/ai', ({ uid, body }) => ai.assist(uid, body));
-
-  let kicking = null;
-  const kick = () => { kicking ??= svc.runDue().catch(console.error).finally(() => { kicking = null; }); };
-  return { routes, kick };
+  return routes;
 }
 
-export function createApp(ctx) {
-  const { svc, auth, oauth } = ctx;
-  const { routes, kick } = buildRoutes(ctx);
+async function readJson(req) {
+  if (req.method === 'GET' || req.method === 'DELETE' || req.method === 'HEAD') return {};
+  const type = req.headers['content-type'] || '';
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) { size += c.length; if (size > 4e6) throw httpError(413, 'request too large'); chunks.push(c); }
+  const raw = Buffer.concat(chunks).toString();
+  if (!raw) return {};
+  if (type.includes('text/csv')) return { csv: raw };
+  if (!type.includes('application/json')) throw httpError(415, 'send JSON');
+  return JSON.parse(raw);
+}
 
-  const server = http.createServer(async (req, res) => {
+/** Returns a Node (req, res) request handler. Works with http.createServer and as a Vercel function. */
+export function createHandler(ctxOrFactory) {
+  const factory = typeof ctxOrFactory === 'function' ? ctxOrFactory : () => ctxOrFactory;
+  let ctxP = null;
+  let routes = null;
+
+  return async function handler(req, res) {
     const headers = { 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin', 'content-security-policy': CSP };
     const send = (code, body, type = 'application/json; charset=utf-8', extra = {}) => {
       res.writeHead(code, { ...headers, 'content-type': type, 'cache-control': 'no-store', ...extra });
       res.end(body === undefined || body === null ? '' : typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
     };
     const setCookie = (token, maxAge) => {
-      const secure = process.env.COOKIE_SECURE === '1' || req.headers['x-forwarded-proto'] === 'https' || !!req.socket.encrypted;
+      const secure = process.env.COOKIE_SECURE === '1' || !!process.env.VERCEL || req.headers['x-forwarded-proto'] === 'https' || !!req.socket?.encrypted;
       return { 'set-cookie': `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? '; Secure' : ''}` };
     };
     try {
+      let ctx;
+      try { ctx = await (ctxP ??= Promise.resolve(factory())); } catch (e) { ctxP = null; throw Object.assign(new Error(`Server setup problem: ${e.message}`), { status: 500, expose: true }); }
+      routes ??= buildRoutes(ctx);
+      const { svc, auth, oauth } = ctx;
       const url = new URL(req.url, 'http://x');
-      const path = url.pathname;
+      // On Vercel every dynamic path is rewritten to /api?__route=<original path>.
+      const path = url.searchParams.has('__route') ? `/${url.searchParams.get('__route')}` : url.pathname;
+      url.searchParams.delete('__route');
       const token = cookieOf(req, 'sid');
 
-      // ---------- API
       if (path.startsWith('/api/')) {
-        // CSRF: browsers always send Origin on cross-site POSTs; reject mismatches.
         if (req.method !== 'GET' && req.headers.origin && !sameHost(req)) throw httpError(403, 'cross-site request blocked');
-        const me = auth.userFromToken(token);
+        const me = await auth.userFromToken(token);
 
         if (path === '/api/auth/signup' || path === '/api/auth/login') {
           if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
           const body = await readJson(req);
-          if (path === '/api/auth/signup') auth.signup(body);
-          const s = auth.login(body, req.socket.remoteAddress);
+          if (path === '/api/auth/signup') await auth.signup(body);
+          const s = await auth.login(body, clientIp(req));
           return send(200, s.user, undefined, setCookie(s.token, s.maxAge));
         }
-        if (path === '/api/auth/logout') { auth.logout(token); return send(200, { ok: true }, undefined, setCookie('', 0)); }
+        if (path === '/api/auth/logout') { await auth.logout(token); return send(200, { ok: true }, undefined, setCookie('', 0)); }
 
         for (const rt of routes) {
           if (rt.method !== req.method) continue;
@@ -157,7 +172,7 @@ export function createApp(ctx) {
         return send(404, { error: 'not found' });
       }
 
-      // ---------- OAuth redirect back from a network (no session cookie needed; state identifies the user)
+      // OAuth redirect back from a network. No session cookie needed: the state identifies the user.
       const cb = /^\/oauth\/callback\/(\w+)$/.exec(path);
       if (cb) {
         try {
@@ -168,10 +183,10 @@ export function createApp(ctx) {
         }
       }
 
-      // ---------- uploaded media (public: Instagram/Threads fetch it from here)
+      // Uploaded media on disk (public: Instagram/Threads fetch it from here).
       const mm = /^\/media\/([\w-]+\.\w+)$/.exec(path);
       if (mm) {
-        const f = svc.media.lookup(mm[1]);
+        const f = await svc.media.lookup(mm[1]);
         if (!f) return send(404, 'not found', 'text/plain');
         const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
         const base = { ...headers, 'content-type': f.mime, 'accept-ranges': 'bytes', 'cache-control': 'public, max-age=31536000, immutable', 'content-security-policy': "default-src 'none'" };
@@ -188,65 +203,29 @@ export function createApp(ctx) {
         return f.stream().pipe(res);
       }
 
-      // ---------- static UI
+      // Static UI (on Vercel these files are served by the CDN instead).
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(405, 'method not allowed', 'text/plain');
       if (path === '/favicon.ico') return send(301, '', 'text/plain', { location: '/icon.svg' });
       const file = normalize(path === '/' ? '/index.html' : path);
       if (file.includes('..') || file.includes('\0')) return send(400, 'bad path', 'text/plain');
       try {
-        const data = await readFile(join(PUBLIC, file));
-        return send(200, data, MIME[extname(file)] || 'application/octet-stream', { 'cache-control': 'no-cache' });
+        return send(200, await readFile(join(PUBLIC, file)), MIME[extname(file)] || 'application/octet-stream', { 'cache-control': 'no-cache' });
       } catch { return send(404, 'not found', 'text/plain'); }
     } catch (e) {
       const status = e.status || (e instanceof SyntaxError ? 400 : 500);
-      if (status >= 500 && !e.status) console.error(e);
-      if (!res.headersSent) send(status, { error: e.status ? e.message : e instanceof SyntaxError ? 'bad JSON' : 'internal error', ...(e.problems && { problems: e.problems }), ...(e.needsSetup && { needsSetup: e.needsSetup }) });
+      if (status >= 500) console.error(e);
+      const message = e.status || e.expose ? e.message : e instanceof SyntaxError ? 'bad JSON' : 'internal error';
+      if (!res.headersSent) send(status, { error: message, ...(e.problems && { problems: e.problems }), ...(e.needsSetup && { needsSetup: e.needsSetup }) });
       else res.destroy();
     }
-  });
-  server.kick = kick;
-  return server;
-}
-
-async function readJson(req) {
-  if (req.method === 'GET' || req.method === 'DELETE' || req.method === 'HEAD') return {};
-  const type = req.headers['content-type'] || '';
-  const chunks = [];
-  let size = 0;
-  for await (const c of req) { size += c.length; if (size > 5e6) throw httpError(413, 'request too large'); chunks.push(c); }
-  const raw = Buffer.concat(chunks).toString();
-  if (!raw) return {};
-  if (type.includes('text/csv')) return { csv: raw };
-  if (!type.includes('application/json')) throw httpError(415, 'send JSON');
-  return JSON.parse(raw);
-}
-
-/** Background jobs: publishing, RSS, metrics, token upkeep. */
-export function startJobs(ctx) {
-  const { db, svc, auth, feeds, analytics } = ctx;
-  const every = (ms, name, fn) => {
-    let busy = false;
-    const run = async () => {
-      if (busy) return;
-      busy = true;
-      try { await fn(); } catch (e) { console.error(`${name}:`, e); } finally { busy = false; }
-    };
-    run();
-    return setInterval(run, ms);
   };
-  db.exec("UPDATE posts SET status='scheduled' WHERE status='publishing'"); // crash recovery; published accounts are never re-sent
-  return [
-    every(15_000, 'publish', () => svc.runDue()),
-    every(60_000, 'feeds', () => feeds.runDue()),
-    every(10 * 60_000, 'metrics', () => analytics.refreshMetrics()),
-    every(6 * 3600_000, 'maintenance', async () => { await svc.maintain(); auth.purgeExpired(); }),
-  ];
 }
+
+/** Default handler (Vercel function and `npm start`); the database is opened on the first request. */
+export const handler = createHandler(async () => createContext(await openDb()));
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const ctx = createContext(openDb());
-  startJobs(ctx);
   const port = +process.env.PORT || 3000;
   const host = process.env.HOST || '127.0.0.1';
-  createApp(ctx).listen(port, host, () => console.log(`Social Poster running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`));
+  http.createServer(handler).listen(port, host, () => console.log(`Social Poster running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`));
 }

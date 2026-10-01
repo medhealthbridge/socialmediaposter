@@ -1,17 +1,21 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
+import http from 'node:http';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb } from '../src/db.js';
 import { createVault } from '../src/vault.js';
-import { createContext, createApp } from '../src/server.js';
-import { PNG } from './helpers.js';
+import { createContext, createHandler } from '../src/server.js';
+import { PNG, freshDb } from './helpers.js';
 
+const dbs = [];
+after(async () => { for (const d of dbs) await d.close(); });
 async function boot() {
-  const ctx = createContext(openDb(':memory:'), { vault: createVault(randomBytes(32)), mediaDir: mkdtempSync(join(tmpdir(), 'sp-')), allowSignup: false });
-  const srv = createApp(ctx).listen(0, '127.0.0.1');
+  const db = await freshDb();
+  dbs.push(db);
+  const ctx = await createContext(db, { vault: createVault(randomBytes(32)), mediaDir: mkdtempSync(join(tmpdir(), 'sp-')), blobToken: '', allowSignup: false });
+  const srv = http.createServer(createHandler(ctx)).listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const call = async (path, { method = 'GET', body, cookie, headers = {}, raw } = {}) => {
@@ -72,13 +76,21 @@ test('posting flow over HTTP, media upload/serve with ranges, exports, OAuth err
 
   const check = await call('/api/posts/check', { method: 'POST', cookie: c, body: { text: '', accountIds: [] } });
   assert.deepEqual(check.json.problems, ['pick at least one account']);
-  const bad = await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'x'.repeat(600), accountIds: [acc.id], scheduledAt: '2030-01-01T00:00:00Z' } });
+  const bad = await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'x'.repeat(600), accountIds: [acc.id], publishNow: true } });
   assert.equal(bad.status, 400);
   assert.match(bad.json.problems[0], /600\/500/);
   const p = await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'hi', media: [up.json.id], accountIds: [acc.id], publishNow: true } });
   assert.equal(p.status, 201);
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal((await call(`/api/posts/${p.json.id}`, { cookie: c })).json.status, 'published');
+  assert.equal(p.json.status, 'published');
+  const q1 = await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'later', accountIds: [acc.id] } });
+  assert.equal(q1.json.status, 'queued');
+  assert.equal((await call('/api/counts', { cookie: c })).json.queued, 1);
+  const next = await call('/api/queue/next', { method: 'POST', cookie: c });
+  assert.equal(next.json.id, q1.json.id);
+  assert.equal(next.json.status, 'published');
+  assert.equal((await call('/api/queue/next', { method: 'POST', cookie: c })).status, 404);
+  // Vercel rewrites every path to /api?__route=<path>
+  assert.equal((await call('/api?__route=api/counts', { cookie: c })).json.published, 2);
 
   const csv = await call('/api/export.csv', { cookie: c });
   assert.match(csv.headers.get('content-disposition'), /attachment/);

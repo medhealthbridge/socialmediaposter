@@ -1,17 +1,24 @@
 {
   "name": "socialmediaposter",
   "version": "0.1.0",
-  "description": "Self-hosted, Hootsuite-style social media scheduler for personal use",
+  "description": "Social media poster with a publish queue — self-host it or deploy to Vercel",
   "type": "module",
   "engines": {
     "node": ">=22.13"
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "test:pg": "TEST_PG=postgres://postgres@127.0.0.1:5433 node --test --test-concurrency=1 \"test/*.test.js\"",
+    "vendor": "esbuild scripts/vendor-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof \"--banner:js=const process=globalThis.process||{env:{}};\" --outfile=public/vendor/blob-upload.js"
   },
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0"
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@vercel/blob": "^2.8.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

@@ -41,7 +41,7 @@ export function createAI(settings) {
   return {
     models: AI_MODELS,
     async assist(uid, body) {
-      const { apiKey, model = 'claude-opus-5-5' } = settings.get(uid, 'ai', {});
+      const { apiKey, model = 'claude-opus-5-5' } = await settings.get(uid, 'ai', {});
       if (!apiKey) throw httpError(400, 'Add your Anthropic API key in Settings → AI assistant first');
       if (!body.text?.trim() && !body.instruction?.trim()) throw httpError(400, 'Write a few words or a topic first');
       const client = new Anthropic({ apiKey, maxRetries: 2, timeout: 90_000 });

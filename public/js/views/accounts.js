@@ -114,7 +114,7 @@ export async function render(root) {
         { label: 'Send a test post', icon: 'send', onClick: async () => { if (!(await confirmBox(`This publishes a short test post to ${a.name}.`, { ok: 'Send test' }))) return; try { const r = await api(`/accounts/${a.id}/test-post`, { method: 'POST' }); toast('Test post sent', 'ok'); if (r.url) window.open(r.url, '_blank', 'noopener'); } catch (err) { toast(err.message, 'bad'); } await refresh(); rerender(); } },
         { label: 'Reconnect / update login', icon: 'retry', onClick: reconnect },
         'sep',
-        { label: 'Remove account', icon: 'trash', onClick: async () => { if (!(await confirmBox(`Remove ${a.name}? Its scheduled deliveries are removed too. Nothing is deleted on ${netLabel(a.type)}.`, { ok: 'Remove', danger: true }))) return; await api(`/accounts/${a.id}`, { method: 'DELETE' }); await refresh(); rerender(); } },
+        { label: 'Remove account', icon: 'trash', onClick: async () => { if (!(await confirmBox(`Remove ${a.name}? It is removed from queued posts. Nothing is deleted on ${netLabel(a.type)}.`, { ok: 'Remove', danger: true }))) return; await api(`/accounts/${a.id}`, { method: 'DELETE' }); await refresh(); rerender(); } },
       ]);
     }
   });

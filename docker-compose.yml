@@ -1,4 +1,4 @@
-# Social Poster + automatic HTTPS (Caddy). Replace poster.example.com with your domain,
+# Self-hosting option: Social Poster + automatic HTTPS (Caddy). Replace poster.example.com with your domain,
 # point its DNS at this server, then: docker compose up -d
 services:
   poster:

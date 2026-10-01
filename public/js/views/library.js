@@ -1,4 +1,4 @@
-import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, confirmBox, go } from '../core.js';
+import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, confirmBox, go, uploadFile } from '../core.js';
 
 export async function render(root, qs) {
   let tab = qs.get('tab') === 'snippets' ? 'snippets' : 'media';
@@ -20,7 +20,7 @@ export async function render(root, qs) {
         : `<div class="empty">${icon('image')}<b>No media yet</b><span>Upload once, reuse in any post.</span></div>`}`;
     const upload = async (files) => {
       for (const f of files) {
-        try { await api('/media', { raw: f, headers: { 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name) }, onProgress: () => {} }); }
+        try { await uploadFile(f); }
         catch (e) { toast(`${f.name}: ${e.message}`, 'bad'); }
       }
       media();

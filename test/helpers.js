@@ -7,14 +7,33 @@ import { openDb } from '../src/db.js';
 import { createVault } from '../src/vault.js';
 import { createContext } from '../src/server.js';
 
-export function setup(opts = {}) {
-  const db = openDb(':memory:');
+/**
+ * A fresh database per test. SQLite in memory by default; set TEST_PG=postgres://user@host:port
+ * to run the same tests against a real Postgres (a new database is created for each test).
+ */
+export async function freshDb() {
+  if (!process.env.TEST_PG) return openDb(':memory:');
+  const pg = (await import('pg')).default;
+  const name = `t_${randomBytes(6).toString('hex')}`;
+  const admin = new pg.Client({ connectionString: `${process.env.TEST_PG}/postgres` });
+  await admin.connect();
+  await admin.query(`CREATE DATABASE ${name}`);
+  await admin.end();
+  return openDb(`${process.env.TEST_PG}/${name}`);
+}
+
+const opened = [];
+export async function setup(opts = {}) {
+  const db = await freshDb();
+  opened.push(db);
   const mediaDir = mkdtempSync(join(tmpdir(), 'sp-media-'));
-  const ctx = createContext(db, { vault: createVault(randomBytes(32)), mediaDir, ...opts });
-  const u1 = ctx.auth.createUser({ email: 'a@x.io', password: 'password1', isAdmin: true, tz: 'UTC' }).id;
-  const u2 = ctx.auth.createUser({ email: 'b@x.io', password: 'password2' }).id;
+  const ctx = await createContext(db, { vault: createVault(randomBytes(32)), mediaDir, blobToken: '', ...opts });
+  ctx.svc.retryDelayMs = 10;
+  const u1 = (await ctx.auth.createUser({ email: 'a@x.io', password: 'password1', isAdmin: true, tz: 'UTC' })).id;
+  const u2 = (await ctx.auth.createUser({ email: 'b@x.io', password: 'password2' })).id;
   return { ...ctx, u1, u2 };
 }
+export const closeAll = async () => { for (const db of opened.splice(0)) await db.close().catch(() => {}); };
 
 /** A fake HTTP API. `routes` maps "METHOD /path" (or a function) to a response. Records every request. */
 export async function fakeServer(routes) {

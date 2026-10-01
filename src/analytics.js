@@ -12,40 +12,38 @@ function localParts(iso, tz) {
 }
 
 export function createAnalytics(svc) {
-  const q = (s) => svc.db.prepare(s);
+  const db = svc.db;
   return {
-    /** Pull likes/reposts/replies for recent posts. Runs in the background; failures are ignored. */
-    async refreshMetrics({ now = new Date(), limit = 25, uid = null } = {}) {
+    /** Pull likes/reposts/replies for recent posts that haven't been checked for a while. */
+    async refreshMetrics({ uid, now = new Date(), limit = 25 } = {}) {
       const since = new Date(now.getTime() - 30 * 864e5).toISOString();
       const stale = new Date(now.getTime() - 3 * 3600e3).toISOString();
-      const rows = q(`SELECT d.id AS delivery_id, d.remote_id, d.account_id FROM deliveries d JOIN accounts a ON a.id=d.account_id
-                      WHERE d.status='published' AND d.remote_id IS NOT NULL AND d.published_at >= ?
-                      AND (d.metrics_at IS NULL OR d.metrics_at < ?) ${uid ? 'AND a.user_id = ?' : ''}
-                      ORDER BY d.metrics_at IS NOT NULL, d.metrics_at LIMIT ?`).all(...[since, stale, ...(uid ? [uid] : []), limit]);
+      const rows = await db.all(`SELECT d.id AS delivery_id, d.remote_id, d.account_id FROM deliveries d JOIN accounts a ON a.id=d.account_id
+        WHERE a.user_id=? AND d.status='published' AND d.remote_id IS NOT NULL AND d.published_at >= ?
+        AND (d.metrics_at IS NULL OR d.metrics_at < ?) ORDER BY d.metrics_at IS NOT NULL, d.metrics_at LIMIT ?`, uid, since, stale, limit);
       let ok = 0;
-      for (const r of rows) {
-        const { delivery_id: deliveryId, remote_id: remoteId } = r;
-        const acc = q('SELECT * FROM accounts WHERE id=?').get(r.account_id);
+      await Promise.all(rows.map(async (r) => {
+        const acc = await db.get('SELECT * FROM accounts WHERE id=?', r.account_id);
         const prov = providers[acc.type];
         let m = null;
         if (prov?.metrics) {
-          try { m = await prov.metrics({ ...svc.providerCtx(acc), remoteId }); ok++; } catch { /* e.g. paid API tier needed */ }
+          try { m = await prov.metrics({ ...(await svc.providerCtx(acc)), remoteId: r.remote_id }); ok++; } catch { /* e.g. X needs a paid plan */ }
         }
-        q('UPDATE deliveries SET metrics=COALESCE(?, metrics), metrics_at=? WHERE id=?').run(m ? JSON.stringify(m) : null, now.toISOString(), deliveryId);
-      }
+        await db.run('UPDATE deliveries SET metrics=COALESCE(?, metrics), metrics_at=? WHERE id=?', m ? JSON.stringify(m) : null, now.toISOString(), r.delivery_id);
+      }));
       return { checked: rows.length, updated: ok };
     },
 
-    stats(uid, { days = 30, now = new Date() } = {}) {
-      const tz = svc.tzOf(uid);
+    async stats(uid, { days = 30, now = new Date() } = {}) {
+      const tz = await svc.tzOf(uid);
       const since = new Date(now.getTime() - days * 864e5).toISOString();
-      const rows = q(`SELECT d.*, a.name AS account_name, a.type, p.text, p.id AS post_id FROM deliveries d
-                      JOIN accounts a ON a.id=d.account_id JOIN posts p ON p.id=d.post_id
-                      WHERE a.user_id=? AND d.published_at >= ? AND d.status='published'`).all(uid, since)
+      const rows = (await db.all(`SELECT d.*, a.name AS account_name, a.type, p.text, p.id AS post_id FROM deliveries d
+        JOIN accounts a ON a.id=d.account_id JOIN posts p ON p.id=d.post_id
+        WHERE a.user_id=? AND d.published_at >= ? AND d.status='published'`, uid, since))
         .map((r) => ({ ...r, metrics: r.metrics ? JSON.parse(r.metrics) : null }));
-      const failed = q(`SELECT COUNT(*) AS n FROM deliveries d JOIN accounts a ON a.id=d.account_id JOIN posts p ON p.id=d.post_id
-                        WHERE a.user_id=? AND d.status='failed' AND COALESCE(p.scheduled_at,p.created_at) >= ?`).get(uid, since).n;
-      const scheduled = q("SELECT COUNT(*) AS n FROM posts WHERE user_id=? AND status='scheduled'").get(uid).n;
+      const failed = Number((await db.get(`SELECT COUNT(*) AS n FROM deliveries d JOIN posts p ON p.id=d.post_id
+        WHERE p.user_id=? AND d.status='failed' AND COALESCE(p.posted_at,p.created_at) >= ?`, uid, since)).n);
+      const queued = Number((await db.get("SELECT COUNT(*) AS n FROM posts WHERE user_id=? AND status='queued'", uid)).n);
       const withM = rows.filter((r) => r.metrics);
       const eng = withM.reduce((s, r) => s + score(r.metrics), 0);
 
@@ -67,7 +65,7 @@ export function createAnalytics(svc) {
 
       return {
         tz, days,
-        kpis: { published: rows.length, failed, scheduled, engagement: eng, avgEngagement: withM.length ? eng / withM.length : null, successRate: rows.length + failed ? rows.length / (rows.length + failed) : null },
+        kpis: { published: rows.length, failed, queued, engagement: eng, avgEngagement: withM.length ? eng / withM.length : null, successRate: rows.length + failed ? rows.length / (rows.length + failed) : null },
         perDay: [...perDay].map(([day, n]) => ({ day, n })),
         perNetwork: Object.values(net).sort((a, b) => b.posts - a.posts),
         top: withM.sort((a, b) => score(b.metrics) - score(a.metrics)).slice(0, 10)

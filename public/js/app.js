@@ -1,16 +1,15 @@
-import { $, $$, api, state, refresh, icon, esc, toast, toastError, initTooltips, params } from './core.js';
+import { $, $$, api, state, refresh, refreshCounts, icon, esc, toast, toastError, initTooltips, params } from './core.js';
 
 const VIEWS = {
   compose: { label: 'Create post', icon: 'compose', load: () => import('./views/compose.js') },
-  calendar: { label: 'Calendar', icon: 'calendar', load: () => import('./views/calendar.js') },
-  posts: { label: 'Posts', icon: 'list', load: () => import('./views/posts.js') },
+  queue: { label: 'Queue', icon: 'queue', load: () => import('./views/posts.js') },
   analytics: { label: 'Analytics', icon: 'chart', load: () => import('./views/analytics.js') },
   accounts: { label: 'Accounts', icon: 'users', load: () => import('./views/accounts.js') },
   library: { label: 'Library', icon: 'image', load: () => import('./views/library.js') },
   feeds: { label: 'RSS autopilot', icon: 'rss', load: () => import('./views/feeds.js') },
   settings: { label: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
 };
-const NAV = ['calendar', 'posts', 'analytics', 'accounts', 'library', 'feeds', 'settings'];
+const NAV = ['queue', 'analytics', 'accounts', 'library', 'feeds', 'settings'];
 
 let current = null;
 
@@ -66,15 +65,29 @@ function shell() {
 }
 
 function updateBadges() {
-  const bad = state.accounts.filter((a) => a.status !== 'ok').length;
-  const link = $('#nav a[data-k="accounts"]');
-  if (link) { link.querySelector('.count')?.remove(); if (bad) link.insertAdjacentHTML('beforeend', `<span class="count" title="Needs attention">${bad}</span>`); }
+  const badge = (k, n, title, cls = '') => {
+    const link = $(`#nav a[data-k="${k}"]`);
+    if (!link) return;
+    link.querySelector('.count')?.remove();
+    if (n) link.insertAdjacentHTML('beforeend', `<span class="count ${cls}" title="${title}">${n}</span>`);
+  };
+  badge('accounts', state.accounts.filter((a) => a.status !== 'ok').length, 'Needs attention');
+  const c = state.counts || {};
+  badge('queue', c.failed || c.queued, c.failed ? 'Failed posts' : 'Waiting in the queue', c.failed ? '' : 'neutral');
+}
+
+/** RSS feeds are checked whenever the app is opened — no background server needed. */
+async function checkFeeds() {
+  try {
+    const r = await api('/feeds/check-due', { method: 'POST' });
+    if (r.created) { toast(`RSS: ${r.created} new item${r.created > 1 ? 's' : ''} added`, 'ok'); await refreshCounts(); if (/^#\/queue/.test(location.hash) || location.hash === '' || location.hash === '#/') route(); }
+  } catch { /* offline or not logged in */ }
 }
 
 async function route() {
   if (!state.user) return;
   const name = (location.hash.slice(2).split('?')[0] || '').split('/')[0];
-  const key = VIEWS[name] ? name : state.accounts.length ? 'calendar' : 'accounts';
+  const key = VIEWS[name] ? name : name === 'posts' ? 'queue' : state.accounts.length ? 'queue' : 'accounts';
   $$('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.k === key));
   $('#shell')?.classList.remove('menu');
   current?.cleanup?.();
@@ -87,9 +100,6 @@ async function route() {
     main.innerHTML = '';
     current = (await mod.render(main, params())) || null;
     document.title = `${VIEWS[key].label} · Social Poster`;
-    if (state.settings.paused && key !== 'settings') {
-      main.firstElementChild?.insertAdjacentHTML('afterbegin', `<div class="paused-banner">${icon('pause')} Publishing is paused — scheduled posts are on hold. <a class="right" href="#/settings?s=general">Resume</a></div>`);
-    }
   } catch (e) {
     console.error(e);
     main.innerHTML = `<div class="page"><div class="card card-pad"><h2>Something went wrong</h2><p class="text-2">${esc(e.message)}</p></div></div>`;
@@ -103,6 +113,7 @@ async function start() {
     await refresh();
     shell();
     route();
+    checkFeeds();
   } catch (e) {
     $('#app').innerHTML = `<div class="boot">Could not reach the server. ${esc(e.message)}</div>`;
   }

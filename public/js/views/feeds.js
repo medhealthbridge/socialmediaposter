@@ -1,6 +1,6 @@
 import { $, $$, api, state, esc, icon, avatar, fmt, toast, modal, confirmBox, busy } from '../core.js';
 
-const MODES = { draft: 'Create drafts for me to review', queue: 'Add to my queue automatically', now: 'Publish immediately' };
+const MODES = { queue: 'Add to my queue (I click Post)', now: 'Publish immediately' };
 
 function feedDialog(feed, after) {
   const sel = new Set(feed?.account_ids || []);
@@ -9,8 +9,8 @@ function feedDialog(feed, after) {
     <label class="field">Post to<div class="row" id="accs">${state.accounts.map((a) => `<button type="button" class="chip ${sel.has(a.id) ? 'on' : ''}" data-id="${a.id}">${avatar(a, 'sm')}${esc(a.name)}</button>`).join('') || '<span class="muted">Connect an account first.</span>'}</div></label>
     <label class="field">When a new item appears<select id="mode">${Object.entries(MODES).map(([k, v]) => `<option value="${k}" ${feed?.mode === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label class="field">Post template <span class="hint">use {title}, {link} and {summary}</span><textarea id="tpl" rows="3">${esc(feed?.template || 'New post: {title}\n{link}')}</textarea></label>
-    <label class="field">Check every<select id="iv">${[15, 30, 60, 180, 720, 1440].map((m) => `<option value="${m}" ${(feed?.interval_min || 30) === m ? 'selected' : ''}>${m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}</option>`).join('')}</select></label>
-    <p class="hint">Existing items are skipped — only new ones from now on are posted.</p>`,
+    <label class="field">Check at most every<select id="iv">${[15, 30, 60, 180, 720, 1440].map((m) => `<option value="${m}" ${(feed?.interval_min || 60) === m ? 'selected' : ''}>${m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}</option>`).join('')}</select></label>
+    <p class="hint">Existing items are skipped — only new ones from now on. Feeds are checked when you open the app (or click “Check now”).</p>`,
   actions: [{ label: 'Cancel' }, { label: feed ? 'Save' : 'Add feed', kind: 'primary', onClick: async (d) => {
     const body = { accountIds: [...sel], mode: $('#mode', d).value, template: $('#tpl', d).value, intervalMin: Number($('#iv', d).value) };
     if (feed) await api(`/feeds/${feed.id}`, { method: 'PUT', body });
@@ -22,7 +22,7 @@ function feedDialog(feed, after) {
 
 export async function render(root) {
   root.innerHTML = `<div class="page">
-    <div class="page-head"><div class="grow"><h1>RSS autopilot</h1><p class="sub">Share new blog posts, videos or podcast episodes automatically.</p></div><button class="btn primary" id="add">${icon('plus')} Add feed</button></div>
+    <div class="page-head"><div class="grow"><h1>RSS autopilot</h1><p class="sub">New blog posts, videos or podcast episodes land in your queue automatically.</p></div><button class="btn primary" id="add">${icon('plus')} Add feed</button></div>
     <div class="card"><div class="list" id="list"></div></div></div>`;
   async function draw() {
     const feeds = await api('/feeds');

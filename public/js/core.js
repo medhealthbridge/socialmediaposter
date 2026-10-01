@@ -4,7 +4,7 @@ export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** App-wide state loaded from /api/bootstrap. */
-export const state = { user: null, providers: {}, connectors: {}, accounts: [], settings: {}, slots: [], snippets: [], aiModels: [], nextSlot: null };
+export const state = { user: null, providers: {}, connectors: {}, accounts: [], settings: {}, snippets: [], aiModels: [], counts: { queued: 0, failed: 0, published: 0 }, storage: 'disk' };
 
 export class ApiError extends Error {
   constructor(message, status, data) { super(message); this.status = status; this.data = data; }
@@ -36,6 +36,27 @@ function upload(path, file, headers, onProgress) {
     x.onerror = () => reject(new ApiError('Upload failed — check your connection', 0));
     x.send(file);
   });
+}
+
+/**
+ * Upload a photo/video to the media library. On Vercel the browser sends the file straight to
+ * Vercel Blob (no size limit from the serverless function); otherwise it goes to this server.
+ */
+export async function uploadFile(file, onProgress = () => {}) {
+  if (state.storage === 'blob') {
+    const { upload } = await import('/vendor/blob-upload.js');
+    const safe = (file.name || 'upload').replace(/[^\w.-]+/g, '_').slice(-80);
+    const b = await upload(`u${state.user.id}/${safe}`, file, {
+      access: 'public', handleUploadUrl: '/api/media/blob-token', contentType: file.type || undefined,
+      multipart: file.size > 20 * 1024 * 1024, onUploadProgress: (p) => onProgress(p.percentage / 100),
+    });
+    return api('/media/register', { method: 'POST', body: { url: b.url, filename: file.name } });
+  }
+  return api('/media', { raw: file, headers: { 'content-type': file.type || 'application/octet-stream', 'x-filename': encodeURIComponent(file.name || 'upload') }, onProgress });
+}
+
+export async function refreshCounts() {
+  try { state.counts = await api('/counts'); window.dispatchEvent(new Event('state')); } catch { /* ignore */ }
 }
 
 export async function refresh() {
@@ -136,7 +157,7 @@ export function avatar(acc, size = '') {
 export const accountById = (id) => state.accounts.find((a) => a.id === Number(id));
 
 export function statusBadge(s) {
-  const label = { draft: 'Draft', scheduled: 'Scheduled', publishing: 'Publishing…', published: 'Published', partial: 'Partly failed', failed: 'Failed', pending: 'Pending', ok: 'Connected', reauth: 'Reconnect needed', error: 'Error' }[s] || s;
+  const label = { queued: 'In queue', draft: 'Draft', scheduled: 'Scheduled', publishing: 'Publishing…', published: 'Published', partial: 'Partly failed', failed: 'Failed', pending: 'Pending', ok: 'Connected', reauth: 'Reconnect needed', error: 'Error' }[s] || s;
   return `<span class="badge ${s}">${label}</span>`;
 }
 

@@ -1,14 +1,22 @@
+/**
+ * Media storage with two backends:
+ *   - disk:  files in data/media, served from /media/<token>.<ext>   (self-hosting)
+ *   - blob:  Vercel Blob (when BLOB_READ_WRITE_TOKEN is set); the browser uploads directly,
+ *            so large videos never pass through a size-limited serverless function.
+ */
 import { createReadStream, createWriteStream, mkdirSync, statSync } from 'node:fs';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile, rename, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { httpError } from './errors.js';
+import { inList } from './db.js';
 
 export const TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/quicktime': 'mov' };
 const MAX_IMAGE = 20 * 1024 * 1024;
 const MAX_VIDEO = 1024 * 1024 * 1024;
+const BLOB_HOST = /^https:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\//i;
 
-/** Check the file really is what it claims to be, so we never serve e.g. HTML from /media. */
+/** Check the file really is what it claims to be, so we never serve e.g. HTML. */
 export function sniff(buf) {
   const hex = buf.subarray(0, 12).toString('hex');
   if (hex.startsWith('ffd8ff')) return 'image/jpeg';
@@ -18,16 +26,21 @@ export function sniff(buf) {
   if (buf.subarray(4, 8).toString() === 'ftyp') return buf.subarray(8, 10).toString() === 'qt' ? 'video/quicktime' : 'video/mp4';
   return null;
 }
+const cleanName = (n) => String(n || 'upload').replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'upload';
 
-export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media' } = {}) {
-  mkdirSync(dir, { recursive: true });
-  const q = (s) => db.prepare(s);
-  const file = (row) => join(dir, `${row.token}.${TYPES[row.mime]}`);
-  const view = (r) => ({ id: r.id, filename: r.filename, mime: r.mime, size: r.size, alt: r.alt, url: `/media/${r.token}.${TYPES[r.mime]}`, created_at: r.created_at });
+export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', blobToken = process.env.BLOB_READ_WRITE_TOKEN } = {}) {
+  const kind = blobToken ? 'blob' : 'disk';
+  if (kind === 'disk') mkdirSync(dir, { recursive: true });
+  const file = (r) => join(dir, `${r.token}.${TYPES[r.mime]}`);
+  const urlOf = (r, base = '') => r.url || `${base}/media/${r.token}.${TYPES[r.mime]}`;
+  const view = (r) => ({ id: r.id, filename: r.filename, mime: r.mime, size: r.size, alt: r.alt, url: urlOf(r), created_at: r.created_at });
+  const blob = () => import('@vercel/blob');
 
   const m = {
-    dir,
-    async save(uid, chunks, { filename = 'upload' } = {}) {
+    kind,
+    /** Disk backend: stream an upload to a file. */
+    async save(uid, chunks, { filename } = {}) {
+      if (kind !== 'disk') throw httpError(400, 'uploads go directly to Blob storage on this server');
       const token = randomBytes(18).toString('base64url');
       const tmp = join(dir, `${token}.part`);
       const out = createWriteStream(tmp);
@@ -43,55 +56,86 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media' } 
         const mime = sniff(head);
         if (!mime) throw httpError(415, 'only JPEG, PNG, GIF, WebP, MP4 and MOV files are supported');
         if (mime.startsWith('image/') && size > MAX_IMAGE) throw httpError(413, 'images must be under 20 MB');
-        const { rename } = await import('node:fs/promises');
         await rename(tmp, join(dir, `${token}.${TYPES[mime]}`));
-        const name = String(filename).replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'upload';
-        const r = q('INSERT INTO media(user_id,token,filename,mime,size) VALUES (?,?,?,?,?)').run(uid, token, name, mime, size);
-        return view(q('SELECT * FROM media WHERE id=?').get(r.lastInsertRowid));
+        const id = await db.insert('INSERT INTO media(user_id,token,filename,mime,size) VALUES (?,?,?,?,?)', uid, token, cleanName(filename), mime, size);
+        return m.get(uid, id);
       } catch (e) {
         out.destroy();
         await unlink(tmp).catch(() => {});
         throw e;
       }
     },
-    list: (uid) => q('SELECT * FROM media WHERE user_id=? ORDER BY id DESC LIMIT 500').all(uid).map(view),
-    get(uid, id) {
-      const r = q('SELECT * FROM media WHERE id=? AND user_id=?').get(id, uid);
+
+    /** Blob backend: issue a short-lived client upload token (browser → Vercel Blob directly). */
+    async blobToken(uid, body, req) {
+      if (kind !== 'blob') throw httpError(400, 'Blob storage is not configured');
+      const { handleUpload } = await import('@vercel/blob/client');
+      return handleUpload({
+        body, request: req, token: blobToken,
+        onBeforeGenerateToken: async (pathname) => {
+          if (!pathname.startsWith(`u${uid}/`)) throw httpError(400, 'invalid upload path');
+          return { allowedContentTypes: Object.keys(TYPES), maximumSizeInBytes: MAX_VIDEO, addRandomSuffix: true };
+        },
+      });
+    },
+    /** Blob backend: record an uploaded blob after checking it really is an allowed media file. */
+    async register(uid, { url, filename }) {
+      if (kind !== 'blob' || !BLOB_HOST.test(String(url))) throw httpError(400, 'invalid upload');
+      const { head, del } = await blob();
+      const info = await head(url, { token: blobToken });
+      const res = await fetch(url, { headers: { range: 'bytes=0-15' } });
+      const mime = sniff(Buffer.from(await res.arrayBuffer()));
+      if (!mime || (mime.startsWith('image/') && info.size > MAX_IMAGE)) {
+        await del(url, { token: blobToken }).catch(() => {});
+        throw httpError(415, mime ? 'images must be under 20 MB' : 'only JPEG, PNG, GIF, WebP, MP4 and MOV files are supported');
+      }
+      const id = await db.insert('INSERT INTO media(user_id,token,filename,mime,size,url) VALUES (?,?,?,?,?,?)', uid, randomBytes(18).toString('base64url'), cleanName(filename), mime, info.size, url);
+      return m.get(uid, id);
+    },
+
+    list: async (uid) => (await db.all('SELECT * FROM media WHERE user_id=? ORDER BY id DESC LIMIT 500', uid)).map(view),
+    async get(uid, id) {
+      const r = await db.get('SELECT * FROM media WHERE id=? AND user_id=?', id, uid);
       if (!r) throw httpError(404, 'media not found');
       return view(r);
     },
-    setAlt(uid, id, alt) {
-      m.get(uid, id);
-      q('UPDATE media SET alt=? WHERE id=?').run(String(alt || '').slice(0, 1500), id);
+    async getMany(uid, ids) {
+      if (!ids.length) return new Map();
+      return new Map((await db.all(`SELECT * FROM media WHERE user_id=? AND id IN ${inList(ids)}`, uid, ...ids)).map((r) => [r.id, view(r)]));
+    },
+    async setAlt(uid, id, alt) {
+      await m.get(uid, id);
+      await db.run('UPDATE media SET alt=? WHERE id=?', String(alt || '').slice(0, 1500), id);
       return m.get(uid, id);
     },
     async remove(uid, id) {
-      const r = q('SELECT * FROM media WHERE id=? AND user_id=?').get(id, uid);
+      const r = await db.get('SELECT * FROM media WHERE id=? AND user_id=?', id, uid);
       if (!r) return;
-      q('DELETE FROM media WHERE id=?').run(id);
-      await unlink(file(r)).catch(() => {});
+      await db.run('DELETE FROM media WHERE id=?', id);
+      if (r.url) await (await blob()).del(r.url, { token: blobToken }).catch(() => {});
+      else await unlink(file(r)).catch(() => {});
     },
-    /** Media objects handed to providers. */
-    resolve(uid, ids, baseUrl) {
-      return ids.map((id) => {
-        const r = q('SELECT * FROM media WHERE id=? AND user_id=?').get(id, uid);
+    /** Media objects handed to network providers. */
+    async resolve(uid, ids, baseUrl) {
+      const out = [];
+      for (const id of ids) {
+        const r = await db.get('SELECT * FROM media WHERE id=? AND user_id=?', id, uid);
         if (!r) throw httpError(400, `attached media #${id} no longer exists`);
-        const path = file(r);
-        return {
+        const read = r.url ? async () => Buffer.from(await (await fetch(r.url)).arrayBuffer()) : () => readFile(file(r));
+        out.push({
           id: r.id, filename: `${r.filename.replace(/\.[^.]+$/, '')}.${TYPES[r.mime]}`, mime: r.mime, size: r.size, alt: r.alt,
-          url: `${baseUrl}/media/${r.token}.${TYPES[r.mime]}`,
-          read: () => readFile(path),
-          blob: async () => new Blob([await readFile(path)], { type: r.mime }),
-        };
-      });
+          url: urlOf(r, baseUrl), read, blob: async () => new Blob([await read()], { type: r.mime }),
+        });
+      }
+      return out;
     },
-    /** For the public /media/<token>.<ext> route. */
-    lookup(name) {
+    /** Disk backend: the public /media/<token>.<ext> route. */
+    async lookup(name) {
       const [token, ext] = String(name).split('.');
-      const r = q('SELECT * FROM media WHERE token=?').get(token || '');
-      if (!r || TYPES[r.mime] !== ext) return null;
+      const r = await db.get('SELECT * FROM media WHERE token=?', token || '');
+      if (!r || r.url || TYPES[r.mime] !== ext) return null;
       const path = file(r);
-      return { mime: r.mime, path, size: statSync(path).size, stream: (opts) => createReadStream(path, opts) };
+      return { mime: r.mime, size: statSync(path).size, stream: (opts) => createReadStream(path, opts) };
     },
   };
   return m;

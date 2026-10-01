@@ -342,3 +342,20 @@ svg.i { width: 16px; height: 16px; flex: none; vertical-align: -3px; }
 h2 svg.i { width: 18px; height: 18px; }
 .toast.ok { background: #15803d; color: #fff; } .toast.bad { background: #b91c1c; color: #fff; }
 .hbar { grid-template-columns: minmax(120px, max-content) 1fr 70px; } .hbar .pill { white-space: nowrap; }
+.nav .count.neutral { background: var(--surface-3); color: var(--text-2); }
+.qnum { font-size: 18px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; }
+.item .post-btn { min-width: 92px; justify-content: center; }
+.queue-hero { display: flex; gap: 16px; align-items: center; padding: 18px 20px; flex-wrap: wrap; }
+.queue-hero .big { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+.order { display: grid; gap: 2px; }
+.order .btn { height: 22px; width: 26px; }
+.badge.queued { background: var(--accent-soft); color: var(--accent-text); }
+svg.i.rot90 { transform: rotate(90deg); }
+@media (max-width: 700px) {
+  .page-head > .grow { flex-basis: 100%; }
+  .page-head input[type=search] { max-width: none !important; flex: 1 1 100%; }
+  .page-head .seg { flex-wrap: wrap; }
+}
+.page > *, .grid-2 > *, .kpis > *, .composer > * { min-width: 0; }
+.card-body { overflow-x: auto; }
+.col > * { min-width: 0; } @media (max-width: 700px) { .kpis { grid-template-columns: 1fr 1fr; } }
