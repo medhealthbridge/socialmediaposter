@@ -1,0 +1,19 @@
+# Social Poster + automatic HTTPS (Caddy). Replace poster.example.com with your domain,
+# point its DNS at this server, then: docker compose up -d
+services:
+  poster:
+    build: .
+    restart: unless-stopped
+    environment:
+      - COOKIE_SECURE=1
+    volumes:
+      - ./data:/app/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    command: caddy reverse-proxy --from poster.example.com --to poster:3000
+    volumes:
+      - caddy_data:/data
+volumes:
+  caddy_data:

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { httpError } from './service.js';
+import { httpError } from './errors.js';
 import { validTz } from './slots.js';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
