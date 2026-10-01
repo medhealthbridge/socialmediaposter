@@ -8,6 +8,7 @@ const api = async (path, opts = {}) => {
   });
   if (res.status === 204) return null;
   const j = await res.json();
+  if (res.status === 401 && !path.startsWith('/auth/')) { state.user = null; showLogin(); throw new Error('Please log in'); }
   if (!res.ok) throw new Error(j.error || res.statusText);
   return j;
 };
@@ -22,12 +23,12 @@ const BEST = {
   telegram: ['Daily 08:00', 'Daily 19:00'], discord: ['Fri 18:00', 'Sat 15:00'], webhook: ['Tue–Thu 10:00'], mock: ['Anytime'],
 };
 
-const state = { tab: 'compose', accounts: [], providers: {}, month: new Date(), editing: null };
-const tabs = [['compose', 'Compose'], ['calendar', 'Calendar'], ['queue', 'Queue & History'], ['bulk', 'Bulk upload'], ['analytics', 'Analytics'], ['accounts', 'Accounts']];
+const state = { tab: 'compose', accounts: [], providers: {}, month: new Date(), editing: null, user: null };
+const tabs = [['compose', 'Compose'], ['calendar', 'Calendar'], ['queue', 'Queue & History'], ['bulk', 'Bulk upload'], ['analytics', 'Analytics'], ['accounts', 'Accounts'], ['schedule', 'Weekly queue'], ['team', 'Team']];
 
 function renderNav() {
-  $('#nav').innerHTML = tabs.map(([k, l]) => `<button data-t="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('');
-  $('#nav').onclick = (e) => { const t = e.target.dataset.t; if (t) { state.tab = t; state.editing = null; render(); } };
+  $('#nav').innerHTML = tabs.filter(([k]) => k !== 'team' || state.user?.is_admin).map(([k, l]) => `<button data-t="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('') + `<span class="sp"></span><span class="hint">${esc(state.user?.email)}</span><button data-t="logout">Log out</button>`;
+  $('#nav').onclick = (e) => { const t = e.target.dataset.t; if (t === 'logout') { api('/auth/logout', { method: 'POST' }).then(boot); return; } if (t) { state.tab = t; state.editing = null; render(); } };
 }
 
 async function render() {
@@ -53,6 +54,7 @@ const views = {
       <div class="hint" id="best"></div>
       <div class="row" style="margin-top:14px">
         <button class="p" id="sched">${p ? 'Save' : 'Schedule'}</button>
+        ${p ? '' : '<button class="s" id="queue">Add to queue</button>'}
         <button class="s" id="draft">Save as draft</button>
         ${p ? '' : '<button class="s" id="now">Post now</button>'}
         <span class="sp"></span>${p ? '<button class="s" id="cancel">Cancel</button>' : ''}
@@ -72,15 +74,17 @@ const views = {
     $('#text').oninput = $('#media').oninput = refresh; refresh();
     const save = guard(async (mode) => {
       const b = body();
+      if (mode === 'queue') b.queue = true;
       if (mode === 'sched' && !b.scheduledAt) throw new Error('Pick a date/time, or use Post now / Save as draft');
       if (mode === 'draft') b.scheduledAt = null;
       if (p) await api(`/posts/${p.id}`, { method: 'PUT', body: b });
       else await api('/posts', { method: 'POST', body: { ...b, publishNow: mode === 'now' } });
-      toast(mode === 'now' ? 'Publishing…' : mode === 'draft' ? 'Draft saved' : 'Scheduled');
+      toast(mode === 'now' ? 'Publishing…' : mode === 'draft' ? 'Draft saved' : mode === 'queue' ? 'Added to next free slot' : 'Scheduled');
       state.editing = null; state.tab = mode === 'now' ? 'queue' : 'calendar'; render();
     });
     $('#sched').onclick = () => save('sched'); $('#draft').onclick = () => save('draft');
     if ($('#now')) $('#now').onclick = () => save('now');
+    if ($('#queue')) $('#queue').onclick = () => save('queue');
     if ($('#cancel')) $('#cancel').onclick = () => { state.editing = null; state.tab = 'queue'; render(); };
   },
 
@@ -105,7 +109,7 @@ const views = {
     $('#app').innerHTML = `<div class="card"><h3>Posts</h3>${posts.map((p) => `
       <div class="post"><div class="row"><span class="tag ${p.status}">${p.status}</span><span class="cnt">${fmt(p.scheduled_at)}</span><span class="sp"></span>
         ${['published', 'publishing'].includes(p.status) ? '' : `<button class="s" data-a="edit" data-id="${p.id}">Edit</button><button class="s" data-a="now" data-id="${p.id}">${p.status === 'failed' || p.status === 'partial' ? 'Retry' : 'Post now'}</button>`}
-        <button class="s d" data-a="del" data-id="${p.id}">Delete</button></div>
+        <button class="s" data-a="dup" data-id="${p.id}">Duplicate</button><button class="s d" data-a="del" data-id="${p.id}">Delete</button></div>
         <div style="margin:6px 0;white-space:pre-wrap">${esc(p.text)}</div>
         <div class="row">${p.deliveries.map((d) => `<span class="tag ${d.status === 'pending' ? '' : d.status}">${esc(d.account_name)}: ${d.status}${d.remote_url ? ` · <a href="${esc(d.remote_url)}" target="_blank" rel="noopener">view</a>` : ''}</span>${d.error ? `<span class="err">${esc(d.error)}</span>` : ''}`).join('')}</div></div>`).join('') || '<p class="hint">Nothing yet.</p>'}</div>`;
     $('#app').onclick = guard(async (e) => {
@@ -113,6 +117,7 @@ const views = {
       if (a === 'del' && confirm('Delete this post?')) await api(`/posts/${id}`, { method: 'DELETE' });
       if (a === 'now') { await api(`/posts/${id}/publish`, { method: 'POST' }); toast('Publishing…'); }
       if (a === 'edit') { state.editing = await api(`/posts/${id}`); state.tab = 'compose'; }
+      if (a === 'dup') { await api(`/posts/${id}/duplicate`, { method: 'POST' }); toast('Duplicated as draft'); }
       render();
     });
   },
@@ -137,6 +142,32 @@ const views = {
       <p class="hint">Engagement metrics (likes, reach) need each network's analytics API; this tracks your own publishing activity.</p></div>`;
   },
 
+  async schedule() {
+    const { tz, slots, next } = await api('/slots');
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    $('#app').innerHTML = `<div class="grid"><div class="card"><h3>Weekly queue slots</h3>
+      <p class="hint">“Add to queue” on the composer picks the next free slot below, in your timezone.</p>
+      ${days.map((d, i) => `<div class="post row"><b style="width:44px">${d}</b>${slots.filter((s) => s.dow === i).map((s) => `<span class="chip on" data-del="${i}|${s.time}">${s.time} ✕</span>`).join('') || '<span class="hint">no slots</span>'}</div>`).join('')}
+      <p class="hint">Next free slot: ${next ? fmt(next) : 'none (add a slot)'}</p></div>
+      <div class="card"><h3>Add slot</h3><label>Days</label><div class="row" id="dsel">${days.map((d, i) => `<span class="chip" data-d="${i}">${d}</span>`).join('')}</div>
+      <label>Time</label><input type="time" id="time" value="09:00"><br><br><button class="p" id="addslot">Add</button>
+      <label>Your timezone</label><input id="tz" value="${esc(tz)}"><br><br><button class="s" id="savetz">Save timezone</button></div></div>`;
+    const save = guard(async (next) => { await api('/slots', { method: 'PUT', body: { slots: next } }); render(); });
+    $('#dsel').onclick = (e) => e.target.closest('.chip')?.classList.toggle('on');
+    $('#addslot').onclick = () => { const ds = [...document.querySelectorAll('#dsel .on')].map((c) => +c.dataset.d); const t = $('#time').value; if (!ds.length || !t) return toast('Pick days and a time'); const set = new Map(slots.map((s) => [`${s.dow}|${s.time}`, s])); ds.forEach((d) => set.set(`${d}|${t}`, { dow: d, time: t })); save([...set.values()]); };
+    $('.grid .card').onclick = (e) => { const k = e.target.dataset.del; if (k) save(slots.filter((s) => `${s.dow}|${s.time}` !== k)); };
+    $('#savetz').onclick = guard(async () => { await api('/me', { method: 'PUT', body: { tz: $('#tz').value } }); toast('Saved'); render(); });
+  },
+
+  async team() {
+    const users = await api('/users');
+    $('#app').innerHTML = `<div class="grid"><div class="card"><h3>Users</h3>${users.map((u) => `<div class="post row"><b>${esc(u.email)}</b>${u.is_admin ? '<span class="tag">admin</span>' : ''}<span class="sp"></span>${u.is_admin ? '' : `<button class="s d" data-id="${u.id}">Remove</button>`}</div>`).join('')}</div>
+      <div class="card"><h3>Add user</h3><label>Email</label><input id="em"><label>Temporary password (min 8)</label><input id="pw" type="password" autocomplete="new-password"><br><br><button class="p" id="adduser">Create</button>
+      <p class="hint">Each user only sees their own accounts, posts and queue. Removing a user deletes all of their data.</p></div></div>`;
+    $('#adduser').onclick = guard(async () => { await api('/users', { method: 'POST', body: { email: $('#em').value, password: $('#pw').value, tz: state.user.tz } }); toast('User created'); render(); });
+    $('.grid .card').onclick = guard(async (e) => { const id = e.target.dataset.id; if (id && confirm('Delete user and all their data?')) { await api(`/users/${id}`, { method: 'DELETE' }); render(); } });
+  },
+
   async accounts() {
     const opts = Object.entries(state.providers).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
     $('#app').innerHTML = `<div class="grid"><div class="card"><h3>Connected accounts</h3>${state.accounts.map((a) => `<div class="post row"><b>${esc(a.name)}</b><span class="tag">${state.providers[a.type]?.label}</span><span class="sp"></span><button class="s" data-a="test" data-id="${a.id}">Send test</button><button class="s d" data-a="del" data-id="${a.id}">Remove</button></div>`).join('') || '<p class="hint">None yet.</p>'}</div>
@@ -156,4 +187,20 @@ const views = {
   },
 };
 
-guard(render)();
+function showLogin(needsSetup = false) {
+  $('#nav').innerHTML = '';
+  $('#app').innerHTML = `<div class="card" style="max-width:380px;margin:60px auto"><h3>${needsSetup ? 'Create the admin account' : 'Log in'}</h3>
+    <label>Email</label><input id="em" type="email" autocomplete="username"><label>Password${needsSetup ? ' (min 8)' : ''}</label><input id="pw" type="password" autocomplete="${needsSetup ? 'new-password' : 'current-password'}">
+    <br><br><div class="row"><button class="p" id="go">${needsSetup ? 'Create account' : 'Log in'}</button>${needsSetup ? '' : '<button class="s" id="su">Sign up</button>'}</div></div>`;
+  const go = (path) => guard(async () => { await api(path, { method: 'POST', body: { email: $('#em').value, password: $('#pw').value, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } }); boot(); });
+  $('#go').onclick = go(needsSetup ? '/auth/signup' : '/auth/login');
+  if ($('#su')) $('#su').onclick = go('/auth/signup');
+  $('#pw').onkeydown = (e) => e.key === 'Enter' && $('#go').click();
+}
+async function boot() {
+  const st = await api('/auth/status');
+  state.user = st.user;
+  if (!st.user) return showLogin(st.needsSetup);
+  render();
+}
+guard(boot)();
