@@ -1,0 +1,12 @@
+{
+  "name": "socialmediaposter",
+  "version": "0.1.0",
+  "description": "Self-hosted, Hootsuite-style social media scheduler for personal use",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "license": "MIT"
+}
