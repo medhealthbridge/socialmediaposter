@@ -7,7 +7,7 @@ import { createService, httpError } from './service.js';
 import { createAuth } from './auth.js';
 import { createFeeds } from './feeds.js';
 import { createAnalytics } from './analytics.js';
-import { createAI, AI_MODELS } from './ai.js';
+import { createAI, AI_PROVIDERS } from './ai.js';
 import { createOAuth } from './oauth.js';
 import { createMcp } from './mcp.js';
 import { publicProviders, publicConnectors } from './providers/index.js';
@@ -45,7 +45,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
     await svc.settings.noteOrigin(uid, originOf(req));
     await svc.maintain(uid).catch(() => {});
     return {
-      user: me, providers: publicProviders(), connectors: publicConnectors(), aiModels: AI_MODELS, storage: svc.media.kind,
+      user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
       mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
     };
@@ -110,6 +110,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
 
   r('GET', '/api/analytics', ({ uid, query }) => analytics.stats(uid, { days: Math.min(365, Math.max(7, Number(query.get('days')) || 30)) }));
   r('POST', '/api/analytics/refresh', ({ uid }) => analytics.refreshMetrics({ uid, limit: 40 }));
+  r('GET', '/api/ai/models', ({ uid }) => ai.models(uid));
   r('POST', '/api/ai', ({ uid, body }) => ai.assist(uid, body));
   return routes;
 }

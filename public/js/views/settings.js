@@ -39,17 +39,32 @@ export async function render(root, qs) {
         <div class="list" style="margin:0 -20px">${apps.map((c) => { const a = state.settings.apps[c.id]; return `<div class="item" style="grid-template-columns:minmax(0,1fr) auto"><div><b>${esc(c.label)}</b> ${a.configured ? '<span class="badge ok">Ready</span>' : '<span class="badge draft">Not set up</span>'}<div class="muted small" style="margin-top:4px">Redirect URL: <code>${esc(a.redirectUri)}</code></div></div><button class="btn sm" data-app="${c.id}">${a.configured ? 'Edit' : 'Set up'}</button></div>`; }).join('')}</div></div>`,
       () => { $('#sbody').onclick = async (e) => { const b = e.target.closest('[data-app]'); if (b && await appSetup(b.dataset.app)) { toast('Saved — now connect accounts from the Accounts page', 'ok'); draw(); } }; }];
     },
-    ai() {
+    async ai() {
       const ai = state.settings.ai;
+      const spec = state.aiProviders[ai.provider];
+      const hasKey = ai.hasKey[ai.provider];
+      let models = spec.models || [];
+      if (hasKey && !models.length) {
+        try { models = await api('/ai/models'); } catch { models = [{ id: ai.model, label: ai.model }]; }
+      }
       return [`<div class="card card-pad form"><h2>${icon('sparkle')} AI assistant</h2>
-        <p class="text-2">Write, improve, shorten, add hashtags, change tone and adapt posts per network — powered by Claude. You pay Anthropic directly for what you use (usually a fraction of a cent per suggestion).</p>
-        <label class="field">Anthropic API key <span class="hint">from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> — stored encrypted</span><input type="password" id="key" placeholder="${ai.hasKey ? '•••••••• (saved)' : 'sk-ant-…'}" autocomplete="off"></label>
-        <label class="field">Model<select id="model">${state.aiModels.map((m) => `<option value="${m.id}" ${ai.model === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}</select></label>
-        <div class="row"><button class="btn primary" id="saveAi">Save</button>${ai.hasKey ? '<button class="btn ghost danger" id="rmKey">Remove key</button>' : ''}</div></div>`, () => {
-        $('#saveAi').onclick = busy($('#saveAi'), async () => { await save({ ai: { apiKey: $('#key').value || undefined, model: $('#model').value } }); draw(); });
+        <p class="text-2">Write, improve, shorten, add hashtags, change tone and adapt posts per network. You bring your own key, so you pay the provider directly (or nothing at all on Gemini's free tier).</p>
+        <label class="field">Provider<select id="prov">${Object.values(state.aiProviders).map((p) => `<option value="${p.id}" ${p.id === ai.provider ? 'selected' : ''}>${esc(p.label)} — ${esc(p.note)}</option>`).join('')}</select></label>
+        <label class="field">${esc(spec.label)} API key <span class="hint">${esc(spec.keyHint)} — <a href="${esc(spec.keyUrl)}" target="_blank" rel="noopener">get one</a>. Stored encrypted.</span>
+          <input type="password" id="key" placeholder="${hasKey ? '•••••••• (saved)' : spec.id === 'gemini' ? 'AIza…' : 'sk-ant-…'}" autocomplete="off"></label>
+        ${models.length ? `<label class="field">Model<select id="model">${models.map((m) => `<option value="${esc(m.id)}" ${ai.model === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}</select>
+          ${spec.id === 'gemini' ? '<span class="hint">Flash models are the free ones. The list comes straight from Google, so it is always current.</span>' : ''}</label>` : `<p class="hint">Save your key to load the list of models.</p>`}
+        <div class="row"><button class="btn primary" id="saveAi">Save</button>${hasKey ? `<button class="btn ghost" id="refreshModels">${icon('retry')} Refresh models</button><button class="btn ghost danger" id="rmKey">Remove key</button>` : ''}</div></div>`, () => {
+        $('#prov').onchange = busy($('#prov'), async () => { await save({ ai: { provider: $('#prov').value } }); draw(); });
+        $('#saveAi').onclick = busy($('#saveAi'), async () => {
+          await save({ ai: { provider: $('#prov').value, apiKey: $('#key').value || undefined, model: $('#model')?.value } });
+          draw();
+        });
+        $('#refreshModels')?.addEventListener('click', () => draw());
         $('#rmKey')?.addEventListener('click', async () => { await save({ ai: { apiKey: null } }, 'Key removed'); draw(); });
       }];
     },
+
     async assistant() {
       const keys = await api('/keys');
       const url = state.mcpUrl || `${location.origin}/mcp`;

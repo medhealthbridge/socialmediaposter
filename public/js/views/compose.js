@@ -254,7 +254,7 @@ export async function render(root, params) {
     try { res = await api('/ai', { method: 'POST', body }); }
     catch (e) {
       if (/API key/.test(e.message)) {
-        modal({ title: 'Set up the AI assistant', body: `<p class="text-2">The assistant uses Claude. Add your Anthropic API key in Settings — it's stored encrypted on your server.</p>`, actions: [{ label: 'Later' }, { label: 'Open settings', kind: 'primary', onClick: () => go('#/settings?s=ai') }] });
+        modal({ title: 'Set up the AI assistant', body: `<p class="text-2">Add an API key in Settings — Google Gemini has a free tier, or you can use Anthropic Claude. It is stored encrypted on your server.</p>`, actions: [{ label: 'Later' }, { label: 'Open settings', kind: 'primary', onClick: () => go('#/settings?s=ai') }] });
         return null;
       }
       throw e;

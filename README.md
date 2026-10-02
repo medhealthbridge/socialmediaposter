@@ -51,7 +51,7 @@ Notes per network:
 - **Composer:** pick several accounts; live previews per network; character counters that use each network's rules; checks before you post (limits, media rules, JPEG for Instagram, Bluesky's 1 MB images…); **Post now** or **Add to queue**.
 - **Customize per network:** different text per account, with one-click AI adaptation.
 - **Media:** drag & drop, paste or a reusable library; alt text; images and video (carousels on Instagram and Threads, media groups on Telegram). On Vercel, uploads go straight from your browser to Blob storage.
-- **AI assistant (Claude):** write from an idea, improve, shorten, add hashtags, change tone, custom instructions. You bring your own Anthropic API key.
+- **AI assistant:** write from an idea, improve, shorten, add hashtags, change tone, custom instructions. Pick your provider in Settings — **Google Gemini** (free tier, no card; key from [AI Studio](https://aistudio.google.com/apikey)) or **Anthropic Claude** (paid). Gemini's model list is fetched from Google, so it stays current; the Flash models are the free ones.
 - **RSS autopilot:** new blog, YouTube or podcast items are added to your queue (or posted instantly) when you open the app.
 - **Analytics:** likes, reposts, replies and views pulled from the networks; per-day and per-network charts; top posts; and a heatmap of *your* best times to click Post.
 - **Reliability:** a quick automatic retry for temporary network errors; partial failures retry only the networks that failed. It never double-posts. Accounts are flagged when they need reconnecting, and failure alerts can go to Telegram or Discord.
@@ -71,7 +71,7 @@ The assistant gets these tools: `list_accounts`, `add_to_queue`, `publish_post`,
 ## Development
 
 ```sh
-npm test          # 33 tests on SQLite
+npm test          # 35 tests on SQLite
 npm run test:pg   # the same tests on Postgres (expects one at 127.0.0.1:5433)
 npm run vendor    # rebuild public/vendor/blob-upload.js (browser upload helper)
 ```

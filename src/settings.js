@@ -1,4 +1,5 @@
 import { connectors } from './providers/index.js';
+import { AI_PROVIDERS } from './ai.js';
 import { httpError } from './errors.js';
 
 /** Per-user settings, all stored encrypted. Everything is configured from the web UI. */
@@ -41,7 +42,11 @@ export function createSettings(db, vault) {
         effectiveUrl: base,
         alertsAccountId: await s.get(uid, 'alertsAccountId'),
         utm: await s.get(uid, 'utm', { enabled: false, source: '{network}', medium: 'social', campaign: '' }),
-        ai: { model: ai.model || 'claude-opus-5-5', hasKey: !!ai.apiKey },
+        ai: {
+          provider: AI_PROVIDERS[ai.provider] ? ai.provider : 'gemini',
+          model: ai.model || AI_PROVIDERS[AI_PROVIDERS[ai.provider] ? ai.provider : 'gemini'].defaultModel,
+          hasKey: Object.fromEntries(Object.values(AI_PROVIDERS).map((p) => [p.id, !!ai[p.keyField]])),
+        },
         apps: appsView,
       };
     },
@@ -61,9 +66,17 @@ export function createSettings(db, vault) {
       }
       if (patch.ai) {
         const cur = await s.get(uid, 'ai', {});
-        const next = { ...cur, model: String(patch.ai.model || cur.model || 'claude-opus-5-5') };
-        if (patch.ai.apiKey === null) delete next.apiKey;
-        else if (patch.ai.apiKey && !patch.ai.apiKey.startsWith('••')) next.apiKey = String(patch.ai.apiKey).trim();
+        const next = { ...cur };
+        if (patch.ai.provider) {
+          if (!AI_PROVIDERS[patch.ai.provider]) throw httpError(400, 'unknown AI provider');
+          if (patch.ai.provider !== cur.provider) next.model = null; // models differ per provider
+          next.provider = patch.ai.provider;
+        }
+        const spec = AI_PROVIDERS[next.provider || 'gemini'];
+        if (patch.ai.model !== undefined) next.model = patch.ai.model ? String(patch.ai.model).slice(0, 120) : null;
+        if (patch.ai.apiKey === null) delete next[spec.keyField];
+        else if (patch.ai.apiKey && !patch.ai.apiKey.startsWith('••')) next[spec.keyField] = String(patch.ai.apiKey).trim();
+        if (!next.model) next.model = spec.defaultModel;
         await s.set(uid, 'ai', next);
       }
       if (patch.apps) {

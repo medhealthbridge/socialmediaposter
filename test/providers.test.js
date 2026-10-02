@@ -10,6 +10,7 @@ import * as BSKY from '../src/providers/bluesky.js';
 import * as TT from '../src/providers/tiktok.js';
 import * as YT from '../src/providers/youtube.js';
 import * as PIN from '../src/providers/pinterest.js';
+import * as AI from '../src/ai.js';
 
 after(closeAll);
 const publishOne = (svc, uid, acc, body = {}) => svc.createPost(uid, { text: 'hello #world https://ex.com', accountIds: [acc.id], publishNow: true, ...body });
@@ -206,25 +207,89 @@ test('Bluesky: facets, image embed, size limit', async () => {
   await fake.close();
 });
 
-test('AI assistant uses the official SDK with server-side fallback and structured output', async () => {
+test('AI assistant: Gemini by default, with its own key, model list and limits', async () => {
+  let shape = null;
   const fake = await fakeServer({
-    'POST /v1/messages': { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: JSON.stringify({ options: ['One', 'Two', 'Three'] }) }] },
+    'GET /v1beta/models': { models: [
+      { name: 'models/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/text-embedding-004', displayName: 'Embeddings', supportedGenerationMethods: ['embedContent'] },
+    ] },
+    'POST /v1beta/models/gemini-2.5-flash:generateContent': (c) => {
+      shape = c.json.generationConfig.responseFormat ? 'responseFormat' : 'responseSchema';
+      return { candidates: [{ content: { parts: [{ text: JSON.stringify({ options: ['One', 'Two', 'Three'] }) }] }, finishReason: 'STOP' }], modelVersion: 'gemini-2.5-flash' };
+    },
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, ai, u1 } = await setup();
+  assert.equal((await svc.settings.view(u1)).ai.provider, 'gemini', 'Gemini is the default');
+  await assert.rejects(ai.assist(u1, { action: 'improve', text: 'hi' }), /Google Gemini API key/);
+
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza-test' } });
+  const models = await ai.models(u1);
+  assert.deepEqual(models.map((m) => m.id), ['gemini-2.5-flash', 'gemini-2.5-pro'], 'free Flash models first, embeddings hidden');
+
+  const r = await ai.assist(u1, { action: 'improve', text: 'hello world', networks: ['x', 'bluesky'] });
+  assert.deepEqual(r.options, ['One', 'Two', 'Three']);
+  assert.equal(r.provider, 'gemini');
+  const call = fake.find('POST', '/v1beta/models/gemini-2.5-flash:generateContent')[0];
+  assert.equal(call.headers['x-goog-api-key'], 'AIza-test');
+  assert.match(call.json.contents[0].parts[0].text, /fit in 280 characters/);
+  assert.match(call.json.systemInstruction.parts[0].text, /copywriter/);
+  assert.equal(shape, 'responseSchema');
+
+  const view = await svc.settings.view(u1);
+  assert.deepEqual(view.ai.hasKey, { gemini: true, anthropic: false });
+  assert.equal(JSON.stringify(view).includes('AIza-test'), false, 'the key is never sent back');
+  await fake.close();
+});
+
+test('AI assistant: Gemini quota, refusal and the newer request shape are all handled', async () => {
+  let newShapeOnly = true;
+  const fake = await fakeServer({
+    'POST /v1beta/models/m1:generateContent': (c) => {
+      if (newShapeOnly && !c.json.generationConfig.responseFormat) {
+        return { status: 400, body: { error: { code: 400, message: 'Invalid JSON payload received. Unknown name "responseSchema"', status: 'INVALID_ARGUMENT' } } };
+      }
+      return { candidates: [{ content: { parts: [{ text: '```json\n{"options":["A","B"]}\n```' }] }, finishReason: 'STOP' }] };
+    },
+    'POST /v1beta/models/m2:generateContent': { status: 429, body: { error: { code: 429, message: 'Quota exceeded', status: 'RESOURCE_EXHAUSTED' } } },
+    'POST /v1beta/models/m3:generateContent': { promptFeedback: { blockReason: 'SAFETY' } },
+    'POST /v1beta/models/m4:generateContent': { status: 400, body: { error: { code: 400, message: 'API key not valid. Please pass a valid API key.' } } },
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, ai, u1 } = await setup();
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza', model: 'm1' } });
+  // Falls back to the newer responseFormat shape and copes with fenced JSON.
+  assert.deepEqual((await ai.assist(u1, { action: 'improve', text: 'x' })).options, ['A', 'B']);
+  newShapeOnly = false;
+
+  await svc.settings.update(u1, { ai: { model: 'm2' } });
+  await assert.rejects(ai.assist(u1, { action: 'improve', text: 'x' }), /free limit is reached/);
+  await svc.settings.update(u1, { ai: { model: 'm3' } });
+  await assert.rejects(ai.assist(u1, { action: 'improve', text: 'x' }), /declined this request/);
+  await svc.settings.update(u1, { ai: { model: 'm4' } });
+  await assert.rejects(ai.assist(u1, { action: 'improve', text: 'x' }), /key was rejected/);
+  await fake.close();
+});
+
+test('AI assistant: Claude still works and keeps its own key', async () => {
+  const fake = await fakeServer({
+    'POST /v1/messages': { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: JSON.stringify({ options: ['One', 'Two'] }) }] },
   });
   process.env.ANTHROPIC_BASE_URL = fake.url;
   const { svc, ai, u1 } = await setup();
-  await assert.rejects(ai.assist(u1, { action: 'improve', text: 'hi' }), /API key/);
-  await svc.settings.update(u1, { ai: { apiKey: 'sk-test' } });
-  const r = await ai.assist(u1, { action: 'improve', text: 'hello world', networks: ['x', 'bluesky'] });
-  assert.deepEqual(r.options, ['One', 'Two', 'Three']);
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza-gemini' } });              // gemini key first
+  await svc.settings.update(u1, { ai: { provider: 'anthropic', apiKey: 'sk-ant-test' } });
+  const r = await ai.assist(u1, { action: 'improve', text: 'hello' });
+  assert.deepEqual(r.options, ['One', 'Two']);
+  assert.equal(r.provider, 'anthropic');
   const call = fake.calls[0];
-  assert.equal(call.json.model, 'claude-opus-5-5');
+  assert.equal(call.json.model, 'claude-opus-5-5', 'switching provider resets the model');
   assert.equal(call.json.fallbacks, 'default');
   assert.match(call.headers['anthropic-beta'], /server-side-fallback-2026-07-01/);
-  assert.equal(call.json.output_config.format.type, 'json_schema');
-  assert.match(call.json.messages[0].content, /fit in 280 characters/);
-  await svc.settings.update(u1, { ai: { model: 'claude-haiku-4-5' } });
-  await ai.assist(u1, { action: 'write', instruction: 'coffee' });
-  assert.equal(fake.calls[1].json.fallbacks, undefined, 'fallbacks only sent for models that support it');
+  const view = await svc.settings.view(u1);
+  assert.deepEqual(view.ai.hasKey, { gemini: true, anthropic: true }, 'both keys are kept');
   delete process.env.ANTHROPIC_BASE_URL;
   await fake.close();
 });
