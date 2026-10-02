@@ -14,6 +14,7 @@ import { publicProviders, publicConnectors } from './providers/index.js';
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.vercel-storage.com https://vercel.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
 const hostOf = (req) => req.headers['x-forwarded-host'] || req.headers.host;
 const sameHost = (req) => { try { return new URL(req.headers.origin).host === hostOf(req); } catch { return false; } };
@@ -104,17 +105,29 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
   return routes;
 }
 
-async function readJson(req) {
-  if (req.method === 'GET' || req.method === 'DELETE' || req.method === 'HEAD') return {};
-  const type = req.headers['content-type'] || '';
-  const chunks = [];
-  let size = 0;
-  for await (const c of req) { size += c.length; if (size > 4e6) throw httpError(413, 'request too large'); chunks.push(c); }
-  const raw = Buffer.concat(chunks).toString();
+function parseBody(raw, type) {
   if (!raw) return {};
   if (type.includes('text/csv')) return { csv: raw };
   if (!type.includes('application/json')) throw httpError(415, 'send JSON');
   return JSON.parse(raw);
+}
+
+async function readJson(req) {
+  if (req.method === 'GET' || req.method === 'DELETE' || req.method === 'HEAD') return {};
+  const type = req.headers['content-type'] || '';
+  // Some hosts (Vercel's Node helpers) parse the body before the handler runs, which drains
+  // the stream. Use what they parsed when it's there, otherwise read the stream ourselves.
+  let pre;
+  try { pre = req.body; } catch { pre = undefined; }
+  if (pre !== null && pre !== undefined && typeof pre !== 'function') {
+    if (Buffer.isBuffer(pre)) return parseBody(pre.toString(), type);
+    if (typeof pre === 'string') return parseBody(pre, type);
+    if (typeof pre === 'object') return pre;
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) { size += c.length; if (size > 4e6) throw httpError(413, 'request too large'); chunks.push(c); }
+  return parseBody(Buffer.concat(chunks).toString(), type);
 }
 
 /** Returns a Node (req, res) request handler. Works with http.createServer and as a Vercel function. */
@@ -215,14 +228,28 @@ export function createHandler(ctxOrFactory) {
       const status = e.status || (e instanceof SyntaxError ? 400 : 500);
       if (status >= 500) console.error(e);
       const message = e.status || e.expose ? e.message : e instanceof SyntaxError ? 'bad JSON' : 'internal error';
-      if (!res.headersSent) send(status, { error: message, ...(e.problems && { problems: e.problems }), ...(e.needsSetup && { needsSetup: e.needsSetup }) });
-      else res.destroy();
+      if (res.headersSent) return res.destroy();
+      // A browser asking for a page gets a readable message, not raw JSON.
+      if (e.expose && (req.headers.accept || '').includes('text/html')) {
+        return send(status, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setup needed</title><style>body{font:16px/1.6 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#f6f7f9;color:#14171c}
+.c{max-width:560px;padding:32px;background:#fff;border:1px solid #e2e5ea;border-radius:12px;margin:16px}h1{font-size:20px;margin:0 0 8px}p{margin:8px 0}code{background:#f1f3f6;padding:2px 6px;border-radius:5px}</style>
+<div class="c"><h1>Social Poster needs one more step</h1><p>${esc(message)}</p>
+<p class="m">Add it in your Vercel project, then <b>redeploy</b>. Everything else is already set up.</p></div>`, 'text/html; charset=utf-8');
+      }
+      send(status, { error: message, ...(e.problems && { problems: e.problems }), ...(e.needsSetup && { needsSetup: e.needsSetup }) });
     }
   };
 }
 
 /** Default handler (Vercel function and `npm start`); the database is opened on the first request. */
 export const handler = createHandler(async () => createContext(await openDb()));
+
+/**
+ * Default export so this file also works when a host (e.g. Vercel) treats it as the
+ * function entry point directly, not just via api/index.js.
+ */
+export default handler;
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = +process.env.PORT || 3000;

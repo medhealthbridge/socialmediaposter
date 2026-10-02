@@ -108,3 +108,40 @@ test('posting flow over HTTP, media upload/serve with ranges, exports, OAuth err
   assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
   srv.closeAllConnections(); srv.close();
 });
+
+test('works when the host pre-parses the request body (Vercel helpers)', async () => {
+  const db = await freshDb();
+  dbs.push(db);
+  const ctx = await createContext(db, { vault: createVault(randomBytes(32)), mediaDir: mkdtempSync(join(tmpdir(), 'sp-')), blobToken: '' });
+  const inner = createHandler(ctx);
+  // Mimic a host that reads the body first and exposes it as req.body, leaving the stream drained.
+  const srv = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const raw = Buffer.concat(chunks).toString();
+    if (raw && (req.headers['content-type'] || '').includes('json')) req.body = JSON.parse(raw);
+    return inner(req, res);
+  }).listen(0, '127.0.0.1');
+  await new Promise((r) => srv.once('listening', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const r = await fetch(`${base}/api/auth/signup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'pre@x.io', password: 'longenough' }) });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).email, 'pre@x.io');
+  srv.closeAllConnections(); srv.close();
+});
+
+test('a missing-setup error renders a readable page for browsers, JSON for the API', async () => {
+  const handler = createHandler(() => { throw Object.assign(new Error('Set the SECRET_KEY environment variable'), { status: 500, expose: true }); });
+  const srv = http.createServer(handler).listen(0, '127.0.0.1');
+  await new Promise((r) => srv.once('listening', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const page = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
+  assert.equal(page.status, 500);
+  assert.match(page.headers.get('content-type'), /text\/html/);
+  const html = await page.text();
+  assert.match(html, /Set the SECRET_KEY/);
+  assert.match(html, /needs one more step/);
+  const json = await fetch(`${base}/api/auth/status`);
+  assert.match((await json.json()).error, /Set the SECRET_KEY/);
+  srv.closeAllConnections(); srv.close();
+});
