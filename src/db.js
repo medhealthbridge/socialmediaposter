@@ -95,12 +95,20 @@ async function openPostgres(url) {
   const pool = new pg.Pool({ connectionString: url, max: 5, idleTimeoutMillis: 10_000, ...(!local && !/sslmode=/.test(url) && { ssl: { rejectUnauthorized: true } }) });
   const toPg = (sql) => { let i = 0; return sql.replace(/\?/g, () => `$${++i}`); };
   const query = (sql, a) => pool.query(toPg(sql), clean(a));
+  // Idle connections can be closed by the server (e.g. Neon scaling to zero); log instead of crashing.
+  pool.on('error', (e) => console.error('postgres pool error:', e.message));
   const client = await pool.connect();
   try {
-    await client.query('SELECT pg_advisory_lock(727274)'); // avoid racing cold starts creating tables
+    // A transaction-scoped lock also works through connection poolers (PgBouncer / Neon "-pooler" URLs)
+    // and stops two cold starts from creating the tables at the same time.
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(727274)');
     await client.query(schema(true));
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw new Error(`could not set up the database: ${e.message}`);
   } finally {
-    await client.query('SELECT pg_advisory_unlock(727274)').catch(() => {});
     client.release();
   }
   return {
@@ -118,6 +126,9 @@ export function databaseUrl() {
 }
 
 export async function openDb(target) {
+  if (target === undefined && !databaseUrl() && process.env.VERCEL) {
+    throw new Error('No database connected. In your Vercel project open Storage → connect a Neon (Postgres) database, then redeploy.');
+  }
   const t = target ?? (databaseUrl() || process.env.DB_PATH || 'data/poster.db');
   return /^postgres(ql)?:\/\//.test(t) ? openPostgres(t) : openSqlite(t);
 }
