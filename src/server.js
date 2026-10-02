@@ -9,6 +9,7 @@ import { createFeeds } from './feeds.js';
 import { createAnalytics } from './analytics.js';
 import { createAI, AI_MODELS } from './ai.js';
 import { createOAuth } from './oauth.js';
+import { createMcp } from './mcp.js';
 import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
@@ -24,10 +25,11 @@ const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() |
 /** Wires every module together. */
 export async function createContext(db, opts = {}) {
   const svc = createService(db, opts);
-  return { db, svc, auth: createAuth(db, opts), feeds: createFeeds(svc), analytics: createAnalytics(svc), ai: createAI(svc.settings), oauth: createOAuth(svc) };
+  const analytics = createAnalytics(svc);
+  return { db, svc, auth: createAuth(db, opts), feeds: createFeeds(svc), analytics, ai: createAI(svc.settings), oauth: createOAuth(svc), mcp: createMcp({ svc, analytics, db }) };
 }
 
-function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
+function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
   const routes = [];
   const r = (method, pattern, handler, opts = {}) => {
     const keys = [];
@@ -45,6 +47,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
     return {
       user: me, providers: publicProviders(), connectors: publicConnectors(), aiModels: AI_MODELS, storage: svc.media.kind,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
+      mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
     };
   });
 
@@ -63,6 +66,8 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
   r('DELETE', '/api/accounts/:id', ({ uid, params }) => svc.deleteAccount(uid, id(params)));
   r('POST', '/api/accounts/:id/check', ({ uid, params }) => svc.checkAccount(uid, id(params)));
   r('POST', '/api/accounts/:id/test-post', ({ uid, params }) => svc.testPost(uid, id(params)));
+  r('GET', '/api/accounts/:id/options', ({ uid, params }) => svc.accountOptions(uid, id(params)));
+  r('POST', '/api/accounts/:id/options', ({ uid, params, body }) => svc.setAccountOption(uid, id(params), body.key, body.value));
   r('POST', '/api/connect/:connector', ({ uid, params, body }) => oauth.start(uid, params.connector, body));
 
   r('GET', '/api/posts', ({ uid, query }) => svc.listPosts(uid, { status: query.get('status'), q: query.get('q'), limit: query.get('limit') }));
@@ -98,6 +103,10 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth }) {
   r('PUT', '/api/feeds/:id', ({ uid, params, body }) => feeds.update(uid, id(params), body));
   r('DELETE', '/api/feeds/:id', ({ uid, params }) => feeds.remove(uid, id(params)));
   r('POST', '/api/feeds/:id/check', ({ uid, params }) => feeds.checkNow(uid, id(params)));
+
+  r('GET', '/api/keys', ({ uid }) => mcp.keys.list(uid));
+  r('POST', '/api/keys', ({ uid, body }) => mcp.keys.create(uid, body.name), { status: 201 });
+  r('DELETE', '/api/keys/:id', ({ uid, params }) => mcp.keys.remove(uid, params.id));
 
   r('GET', '/api/analytics', ({ uid, query }) => analytics.stats(uid, { days: Math.min(365, Math.max(7, Number(query.get('days')) || 30)) }));
   r('POST', '/api/analytics/refresh', ({ uid }) => analytics.refreshMetrics({ uid, limit: 40 }));
@@ -150,7 +159,7 @@ export function createHandler(ctxOrFactory) {
       let ctx;
       try { ctx = await (ctxP ??= Promise.resolve(factory())); } catch (e) { ctxP = null; throw Object.assign(new Error(`Server setup problem: ${e.message}`), { status: 500, expose: true }); }
       routes ??= buildRoutes(ctx);
-      const { svc, auth, oauth } = ctx;
+      const { svc, auth, oauth, mcp } = ctx;
       const url = new URL(req.url, 'http://x');
       // On Vercel every dynamic path is rewritten to /api?__route=<original path>.
       const path = url.searchParams.has('__route') ? `/${url.searchParams.get('__route')}` : url.pathname;
@@ -183,6 +192,28 @@ export function createHandler(ctxOrFactory) {
           return send(rt.status || 200, out === undefined || out?.changes !== undefined ? { ok: true } : out);
         }
         return send(404, { error: 'not found' });
+      }
+
+      // MCP endpoint for assistants (Claude custom connector). Authenticated by an access key.
+      if (path === '/mcp') {
+        const cors = {
+          'access-control-allow-origin': req.headers.origin || '*',
+          'access-control-allow-headers': 'content-type, authorization, mcp-protocol-version, mcp-session-id',
+          'access-control-allow-methods': 'POST, GET, OPTIONS',
+          'access-control-expose-headers': 'mcp-session-id',
+          'access-control-max-age': '86400',
+        };
+        if (req.method === 'OPTIONS') return send(204, '', 'text/plain', cors);
+        if (req.method !== 'POST') return send(405, { jsonrpc: '2.0', id: null, error: { code: -32601, message: 'use POST' } }, undefined, cors);
+        const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
+        const uid = await mcp.userForKey(bearer || url.searchParams.get('key'));
+        const body = await readJson(req);
+        if (uid == null && (Array.isArray(body) ? body : [body]).some((m) => m?.method === 'tools/call')) {
+          return send(401, { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32001, message: 'Invalid or missing access key. Create one in Social Poster → Settings → Assistant access.' } }, undefined,
+            { ...cors, 'www-authenticate': 'Bearer realm="social-poster"' });
+        }
+        const out = await mcp.handle(uid, body);
+        return out === null ? send(202, '', 'text/plain', cors) : send(200, out, undefined, cors);
       }
 
       // OAuth redirect back from a network. No session cookie needed: the state identifies the user.

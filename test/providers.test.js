@@ -7,6 +7,9 @@ import * as META from '../src/providers/meta.js';
 import * as TH from '../src/providers/threads.js';
 import * as SIMPLE from '../src/providers/simple.js';
 import * as BSKY from '../src/providers/bluesky.js';
+import * as TT from '../src/providers/tiktok.js';
+import * as YT from '../src/providers/youtube.js';
+import * as PIN from '../src/providers/pinterest.js';
 
 after(closeAll);
 const publishOne = (svc, uid, acc, body = {}) => svc.createPost(uid, { text: 'hello #world https://ex.com', accountIds: [acc.id], publishNow: true, ...body });
@@ -223,5 +226,145 @@ test('AI assistant uses the official SDK with server-side fallback and structure
   await ai.assist(u1, { action: 'write', instruction: 'coffee' });
   assert.equal(fake.calls[1].json.fallbacks, undefined, 'fallbacks only sent for models that support it');
   delete process.env.ANTHROPIC_BASE_URL;
+  await fake.close();
+});
+
+const MP4 = Buffer.concat([Buffer.from('0000001c', 'hex'), Buffer.from('ftypisom'), Buffer.alloc(200)]);
+
+test('TikTok: PKCE login, creator info, chunked file upload, privacy must be chosen', async () => {
+  const puts = [];
+  let status = 'PROCESSING_UPLOAD';
+  const fake = await fakeServer({
+    'POST /v2/oauth/token/': (c) => ({ access_token: c.form.grant_type === 'refresh_token' ? 'tok2' : 'tok', refresh_token: 'r', expires_in: 86400, open_id: 'OID' }),
+    'GET /v2/user/info/': { data: { user: { open_id: 'OID', username: 'me', display_name: 'Me', avatar_url: 'https://t/a.jpg' } } },
+    'POST /v2/post/publish/creator_info/query/': { data: { creator_username: 'me', privacy_level_options: ['PUBLIC_TO_EVERYONE', 'SELF_ONLY'], comment_disabled: false, duet_disabled: true, stitch_disabled: false } },
+    'POST /v2/post/publish/video/init/': { data: { publish_id: 'PID', upload_url: 'UPLOAD' } },
+    'PUT /tt-upload': { status: 201, body: '' },
+    'POST /v2/post/publish/status/fetch/': () => { const s = status; status = 'PUBLISH_COMPLETE'; return { data: { status: s, publicaly_available_post_id: ['VID1'] } }; },
+  });
+  Object.assign(TT.endpoints, { auth: fake.url, api: fake.url });
+  const { svc, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { tiktok: { clientKey: 'ck', clientSecret: 'cs' } } });
+  const { url } = await oauth.start(u1, 'tiktok');
+  const u = new URL(url);
+  assert.equal(u.searchParams.get('client_key'), 'ck');
+  assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
+  assert.match(u.searchParams.get('scope'), /video\.publish/);
+  const { accounts: [acc] } = await oauth.callback('tiktok', { code: 'c', state: u.searchParams.get('state') });
+  assert.equal(acc.handle, '@me');
+  assert.equal(acc.needs_setup, true, 'privacy must be chosen before posting');
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url2, o) => realFetch(url2 === 'UPLOAD' ? `${fake.url}/tt-upload` : url2, o);
+  const m = await svc.media.save(u1, chunks(MP4), { filename: 'v.mp4' });
+  let post = await svc.createPost(u1, { text: 'my clip', media: [m.id], accountIds: [acc.id], publishNow: true });
+  assert.match(post.deliveries[0].error, /Choose who can see/);
+
+  const opts = await svc.accountOptions(u1, acc.id);
+  assert.deepEqual(opts[0].choices.map((c) => c.value), ['PUBLIC_TO_EVERYONE', 'SELF_ONLY']);
+  assert.equal(opts[0].value, null, 'no default is pre-selected');
+  await assert.rejects(svc.setAccountOption(u1, acc.id, 'privacyLevel', 'NOPE'), /not available/);
+  const saved = await svc.setAccountOption(u1, acc.id, 'privacyLevel', 'SELF_ONLY');
+  assert.equal(saved.needs_setup, false);
+
+  post = await svc.publish(u1, post.id);
+  globalThis.fetch = realFetch;
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  const init = fake.find('POST', '/v2/post/publish/video/init/')[0].json;
+  assert.equal(init.post_info.privacy_level, 'SELF_ONLY');
+  assert.equal(init.post_info.disable_duet, true, 'creator settings are respected');
+  assert.equal(init.source_info.source, 'FILE_UPLOAD');
+  assert.equal(init.source_info.video_size, MP4.length);
+  const up = fake.find('PUT', '/tt-upload')[0];
+  assert.equal(up.headers['content-range'], `bytes 0-${MP4.length - 1}/${MP4.length}`);
+  assert.equal(post.deliveries[0].remote_url, 'https://www.tiktok.com/@me/video/VID1');
+  await fake.close();
+});
+
+test('TikTok reports its own error bodies, which arrive with HTTP 200', async () => {
+  const fake = await fakeServer({
+    'POST /v2/oauth/token/': { access_token: 'tok', refresh_token: 'r', expires_in: 86400, open_id: 'O' },
+    'POST /v2/post/publish/creator_info/query/': { error: { code: 'access_token_invalid', message: 'The access token is invalid', log_id: 'L1' } },
+  });
+  Object.assign(TT.endpoints, { auth: fake.url, api: fake.url });
+  const { svc, u1 } = await setup();
+  const acc = await svc.upsertOAuthAccount(u1, { type: 'tiktok', name: 'TT', external_id: 'O', config: { accessToken: 'tok', refreshToken: 'r', expiresAt: new Date(Date.now() + 9e6).toISOString(), privacyLevel: 'SELF_ONLY', username: 'me' } });
+  const m = await svc.media.save(u1, chunks(MP4), { filename: 'v.mp4' });
+  const post = await svc.createPost(u1, { text: 'x', media: [m.id], accountIds: [acc.id], publishNow: true });
+  assert.equal(post.status, 'failed');
+  assert.match(post.deliveries[0].error, /access token is invalid.*log L1/);
+  await fake.close();
+});
+
+test('YouTube: resumable upload, title from the first line, visibility choice, stats', async () => {
+  const fake = await fakeServer({
+    'POST /token': (c) => ({ access_token: c.form.grant_type === 'refresh_token' ? 'new' : 'tok', refresh_token: 'r', expires_in: 3600 }),
+    'GET /youtube/v3/channels': { items: [{ id: 'CH1', snippet: { title: 'My Channel', customUrl: '@mych', thumbnails: { default: { url: 'https://y/a.jpg' } } } }] },
+    'POST /upload/youtube/v3/videos': { status: 200, headers: { location: 'RESUMABLE' }, body: {} },
+    'PUT /resume': { id: 'VID9' },
+    'GET /youtube/v3/videos': { items: [{ statistics: { viewCount: '120', likeCount: '7', commentCount: '2' } }] },
+  });
+  Object.assign(YT.endpoints, { auth: fake.url, token: fake.url, api: fake.url });
+  const { svc, analytics, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { youtube: { clientId: 'cid', clientSecret: 'cs' } } });
+  const { url } = await oauth.start(u1, 'youtube');
+  const u = new URL(url);
+  assert.equal(u.searchParams.get('access_type'), 'offline');
+  assert.equal(u.searchParams.get('prompt'), 'consent', 'needed to receive a refresh token');
+  const { accounts: [acc] } = await oauth.callback('youtube', { code: 'c', state: u.searchParams.get('state') });
+  assert.equal(acc.name, 'My Channel');
+  assert.equal(acc.needs_setup, true);
+  await svc.setAccountOption(u1, acc.id, 'privacyStatus', 'unlisted');
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url2, o) => realFetch(url2 === 'RESUMABLE' ? `${fake.url}/resume` : url2, o);
+  const m = await svc.media.save(u1, chunks(MP4), { filename: 'v.mp4' });
+  const png = await svc.media.save(u1, chunks(PNG), { filename: 'p.png' });
+  assert.match((await svc.problems(u1, { text: 'x', media: [png.id], accountIds: [acc.id] })).join(), /only videos/);
+  assert.match((await svc.problems(u1, { text: 'x'.repeat(120) + '\nbody', media: [m.id], accountIds: [acc.id] })).join(), /100 characters or fewer/);
+  const post = await svc.createPost(u1, { text: 'My holiday video\nShot last week.', media: [m.id], accountIds: [acc.id], publishNow: true });
+  globalThis.fetch = realFetch;
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  const init = fake.find('POST', '/upload/youtube/v3/videos')[0];
+  assert.equal(init.json.snippet.title, 'My holiday video');
+  assert.equal(init.json.snippet.description, 'Shot last week.');
+  assert.equal(init.json.status.privacyStatus, 'unlisted');
+  assert.equal(init.headers['x-upload-content-length'], String(MP4.length));
+  assert.equal(post.deliveries[0].remote_url, 'https://www.youtube.com/watch?v=VID9');
+  await analytics.refreshMetrics({ uid: u1 });
+  assert.deepEqual((await svc.getPost(u1, post.id)).deliveries[0].metrics, { likes: 7, replies: 2, reposts: 0, views: 120 });
+  await fake.close();
+});
+
+test('Pinterest: one account per board, pin posted as base64 with a link', async () => {
+  const fake = await fakeServer({
+    'POST /v5/oauth/token': { access_token: 'tok', refresh_token: 'r', expires_in: 2592000 },
+    'GET /v5/user_account': { username: 'me', profile_image: 'https://p/a.jpg' },
+    'GET /v5/boards': { items: [{ id: 'B1', name: 'Recipes' }, { id: 'B2', name: 'Travel' }] },
+    'POST /v5/pins': { id: 'PIN1' },
+  });
+  Object.assign(PIN.endpoints, { auth: fake.url, api: fake.url });
+  const { svc, oauth, u1 } = await setup();
+  await svc.settings.update(u1, { apps: { pinterest: { clientId: 'cid', clientSecret: 'cs' } } });
+  const { url } = await oauth.start(u1, 'pinterest');
+  const { accounts } = await oauth.callback('pinterest', { code: 'c', state: new URL(url).searchParams.get('state') });
+  assert.deepEqual(accounts.map((a) => a.name), ['Recipes', 'Travel']);
+  const tokenCall = fake.find('POST', '/v5/oauth/token')[0];
+  assert.equal(tokenCall.headers.authorization, 'Basic ' + Buffer.from('cid:cs').toString('base64'));
+
+  const jpg = await svc.media.save(u1, chunks(JPEG), { filename: 'food.jpg' });
+  const png = await svc.media.save(u1, chunks(PNG), { filename: 'p.png' });
+  assert.match((await svc.problems(u1, { text: 'x', media: [], accountIds: [accounts[0].id] })).join(), /needs at least one image/);
+  assert.equal((await svc.problems(u1, { text: 'x', media: [png.id], accountIds: [accounts[0].id] })).length, 0, 'PNG is allowed');
+  const post = await svc.createPost(u1, { text: 'Best pasta\nQuick midweek dinner https://blog.ex/pasta', media: [jpg.id], accountIds: [accounts[0].id], publishNow: true });
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  const pin = fake.find('POST', '/v5/pins')[0].json;
+  assert.equal(pin.board_id, 'B1');
+  assert.equal(pin.title, 'Best pasta');
+  assert.equal(pin.description, 'Quick midweek dinner https://blog.ex/pasta');
+  assert.equal(pin.link, 'https://blog.ex/pasta');
+  assert.equal(pin.media_source.source_type, 'image_base64');
+  assert.equal(Buffer.from(pin.media_source.data, 'base64').length, JPEG.length);
+  assert.equal(post.deliveries[0].remote_url, 'https://www.pinterest.com/pin/PIN1/');
   await fake.close();
 });

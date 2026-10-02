@@ -1,6 +1,6 @@
 # Social Poster
 
-Your own social media poster, like Hootsuite but simpler: write posts once, keep them in a **queue**, and publish with one click to X, Instagram, Facebook Pages, LinkedIn, Threads, Bluesky, Mastodon, Telegram and Discord, plus anything else through webhooks (Zapier, Make, n8n).
+Your own social media poster, like Hootsuite but simpler: write posts once, keep them in a **queue**, and publish with one click to X, Instagram, Facebook Pages, TikTok, YouTube, LinkedIn, Pinterest, Threads, Bluesky, Mastodon, Telegram and Discord, plus anything else through webhooks (Zapier, Make, n8n).
 
 Nothing is posted on a timer: posts wait until you click **Post** (or **Post next**). So the app doesn't need an always-on server and runs fine on **Vercel**. **Everything is configured in the web UI. You never edit code or config files.**
 
@@ -35,10 +35,15 @@ Optional environment variables: `PORT`, `HOST`, `DATABASE_URL` (use Postgres ins
 | Bluesky | Handle + an app password |
 | Telegram | Bot token from @BotFather + your channel/group |
 | Discord | A channel webhook URL |
-| X, LinkedIn, Facebook/Instagram, Threads | One-time: register a free developer app (the app shows step-by-step instructions and the exact callback URL to paste), then click **Connect** and log in. |
+| X, LinkedIn, Facebook/Instagram, TikTok, YouTube, Pinterest, Threads | One-time: register a free developer app (the app shows step-by-step instructions and the exact callback URL to paste), then click **Connect** and log in. |
 | Anything else | Generic webhook → Zapier / Make / n8n |
 
-Instagram needs a Business/Creator account linked to a Facebook Page. Meta and Threads apps work in Development mode for you as the app admin, so personal use needs no app review.
+Notes per network:
+
+- **Instagram** needs a Business/Creator account linked to a Facebook Page. Meta and Threads apps work in Development mode for you as the app admin, so personal use needs no app review.
+- **TikTok** makes every post private (“Only me”) until TikTok audits your app — their rule, not a bug. You choose who can see posts in **Accounts → ⋯ → Post settings**; TikTok requires that choice to be yours, with no default. Videos upload directly; photo posts need the public HTTPS address.
+- **YouTube** uploads stay Private until Google audits your Cloud project — again their rule. The first line of your post becomes the video title (100 characters max), the rest the description. One video per post.
+- **Pinterest** adds one account per board, so you choose the board by choosing the account. A pin needs one image; the first line becomes the title and the first link in the text becomes the pin's link.
 
 ## Features
 
@@ -54,10 +59,19 @@ Instagram needs a Business/Creator account linked to a Facebook Page. Meta and T
 - **Security:** credentials and settings are encrypted at rest (AES-256-GCM); scrypt passwords; HttpOnly cookies + CSRF origin check; rate-limited login; strict CSP; uploads are checked by their actual file content.
 - Installable as an app (PWA), dark mode, works on phones. Optional extra users (Settings → Users), each fully separated.
 
+## Let an assistant post for you (MCP)
+
+Social Poster speaks **MCP**, so Claude can use it: *“draft three posts about the new menu and queue them”*, *“what did best last month?”*, *“publish the next one”*.
+
+1. In the app go to **Settings → Assistant access**, create a key and copy it.
+2. In Claude: **Settings → Connectors → Add custom connector**, and paste the connector URL shown on that page (`https://your-app/mcp`). If it asks for a key, paste the key; if it only accepts a URL, use the full URL with `?key=…` that the app shows you.
+
+The assistant gets these tools: `list_accounts`, `add_to_queue`, `publish_post`, `list_posts`, `update_post`, `delete_post`, `check_post` and `get_analytics`. New posts go to the **queue** by default — nothing is published unless you ask for it. Remove a key any time to cut access off.
+
 ## Development
 
 ```sh
-npm test          # 25 tests on SQLite
+npm test          # 33 tests on SQLite
 npm run test:pg   # the same tests on Postgres (expects one at 127.0.0.1:5433)
 npm run vendor    # rebuild public/vendor/blob-upload.js (browser upload helper)
 ```

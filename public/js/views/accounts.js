@@ -1,11 +1,12 @@
 import { $, $$, api, state, refresh, esc, icon, avatar, netMark, netLabel, statusBadge, toast, modal, busy, confirmBox, copyBox, params } from '../core.js';
 
 const DESCRIBE = {
-  x: 'Posts, images, video', instagram: 'Business/Creator accounts', facebook: 'Pages you manage', linkedin: 'Your personal profile',
+  x: 'Posts, images, video', instagram: 'Business/Creator accounts', facebook: 'Pages you manage', tiktok: 'Videos & photo posts',
+  youtube: 'Video uploads', linkedin: 'Your personal profile', pinterest: 'Pins — one account per board',
   threads: 'Posts & carousels', bluesky: 'App password — 1 minute', mastodon: 'Any server, one click', telegram: 'Channels & groups via a bot',
   discord: 'Channel webhooks', webhook: 'Zapier, Make, n8n…', mock: 'Dry run — nothing is posted',
 };
-const ORDER = ['x', 'instagram', 'facebook', 'linkedin', 'threads', 'bluesky', 'mastodon', 'telegram', 'discord', 'webhook', 'mock'];
+const ORDER = ['x', 'instagram', 'facebook', 'tiktok', 'youtube', 'linkedin', 'pinterest', 'threads', 'bluesky', 'mastodon', 'telegram', 'discord', 'webhook', 'mock'];
 
 /** Developer-app setup dialog (X, LinkedIn, Meta, Threads). Resolves true when saved. */
 export function appSetup(connectorId, { thenConnect = false } = {}) {
@@ -74,6 +75,31 @@ function startConnect(type) {
   return formDialog(type);
 }
 
+/** Provider-specific per-account choices (TikTok privacy, YouTube visibility). */
+export async function postSettings(account, after) {
+  let opts;
+  try { opts = await api(`/accounts/${account.id}/options`); }
+  catch (e) { return toast(e.message, 'bad'); }
+  if (!opts.length) return toast('This account has no extra settings');
+  modal({
+    title: `${esc(account.name)} — post settings`,
+    body: opts.map((o) => `<label class="field">${esc(o.label)}${o.hint ? `<span class="hint">${esc(o.hint)}</span>` : ''}
+      <select data-k="${esc(o.key)}">
+        <option value="" ${o.value ? '' : 'selected'} disabled>Choose…</option>
+        ${o.choices.map((c) => `<option value="${esc(c.value)}" ${c.value === o.value ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+      </select></label>`).join(''),
+    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async (d) => {
+      for (const sel of $$('select[data-k]', d)) {
+        if (!sel.value) throw new Error('Pick an option first');
+        await api(`/accounts/${account.id}/options`, { method: 'POST', body: { key: sel.dataset.k, value: sel.value } });
+      }
+      toast('Saved', 'ok');
+      await refresh();
+      after?.();
+    } }],
+  });
+}
+
 let rerender = () => {};
 
 export async function render(root) {
@@ -89,7 +115,9 @@ export async function render(root) {
         <div class="acct-top">${avatar(a, 'lg')}<div class="grow" style="min-width:0"><div class="bold ellipsis">${esc(a.name)}</div><div class="muted small ellipsis">${esc(a.handle || netLabel(a.type))}</div></div></div>
         <div class="row">${statusBadge(a.status)}<span class="muted small">${esc(netLabel(a.type))}</span>${a.profile_url ? `<a class="small right" href="${esc(a.profile_url)}" target="_blank" rel="noopener">Profile ${icon('ext')}</a>` : ''}</div>
         ${a.last_error && a.status !== 'ok' ? `<div class="err">${esc(a.last_error)}</div>` : ''}
+        ${a.needs_setup ? `<div class="callout warn">${icon('alert')}<div>Choose who can see posts from this account before posting.</div></div>` : ''}
         <div class="row">
+          ${a.needs_setup ? `<button class="btn sm primary" data-act="settings">${icon('settings')} Finish setup</button>` : ''}
           ${a.status !== 'ok' ? `<button class="btn sm primary" data-act="reconnect">${icon('retry')} Reconnect</button>` : ''}
           <button class="btn sm" data-act="check">Check</button>
           <button class="btn sm ghost" data-act="more" aria-label="More">⋯</button>
@@ -106,11 +134,13 @@ export async function render(root) {
     const p = state.providers[a.type];
     const reconnect = () => (a.type === 'mastodon' && !a.fields.token ? mastodonDialog() : p.connector && !(a.type === 'mastodon' && a.fields.token) ? connect(p.connector).catch((err) => toast(err.message, 'bad')) : formDialog(a.type, a));
     if (b.dataset.act === 'reconnect') return reconnect();
+    if (b.dataset.act === 'settings') return postSettings(a, rerender);
     if (b.dataset.act === 'check') return busy(b, async () => { const r = await api(`/accounts/${a.id}/check`, { method: 'POST' }); toast(r.message, r.ok ? 'ok' : 'bad'); await refresh(); rerender(); })();
     if (b.dataset.act === 'more') {
       const { menu } = await import('../core.js');
       menu(b, [
         { label: 'Rename', icon: 'edit', onClick: () => modal({ title: 'Rename account', body: `<input type="text" id="nm" value="${esc(a.name)}">`, actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async (d) => { await api(`/accounts/${a.id}`, { method: 'PATCH', body: { name: $('#nm', d).value } }); await refresh(); rerender(); } }], onOpen: (d) => $('#nm', d).select() }) },
+        ...(state.providers[a.type]?.options ? [{ label: 'Post settings…', icon: 'settings', onClick: () => postSettings(a, rerender) }] : []),
         { label: 'Send a test post', icon: 'send', onClick: async () => { if (!(await confirmBox(`This publishes a short test post to ${a.name}.`, { ok: 'Send test' }))) return; try { const r = await api(`/accounts/${a.id}/test-post`, { method: 'POST' }); toast('Test post sent', 'ok'); if (r.url) window.open(r.url, '_blank', 'noopener'); } catch (err) { toast(err.message, 'bad'); } await refresh(); rerender(); } },
         { label: 'Reconnect / update login', icon: 'retry', onClick: reconnect },
         'sep',

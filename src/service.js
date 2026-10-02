@@ -35,7 +35,11 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     const c = cfg(a);
     const fields = {};
     for (const f of prov?.fields || []) fields[f.key] = f.secret ? (c[f.key] ? '••••••' : '') : c[f.key] ?? '';
-    return { id: a.id, name: a.name, type: a.type, handle: a.handle, avatar: a.avatar, profile_url: a.profile_url, status: a.status, last_error: a.last_error, fields, created_at: a.created_at };
+    return {
+      id: a.id, name: a.name, type: a.type, handle: a.handle, avatar: a.avatar, profile_url: a.profile_url,
+      status: a.status, last_error: a.last_error, fields, created_at: a.created_at,
+      needs_setup: !!prov?.needsSetup?.(c),
+    };
   };
   const uniqueName = async (uid, base, exceptId = 0) => {
     const b = String(base || 'Account').trim().slice(0, 80) || 'Account';
@@ -137,6 +141,24 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
       }
     },
 
+    /** Provider-specific per-account choices (e.g. who can see your TikTok posts). */
+    async accountOptions(uid, id) {
+      const a = await ownedAccount(uid, id);
+      const prov = providers[a.type];
+      if (!prov?.options) return [];
+      return prov.options(await providerCtx(a));
+    },
+
+    async setAccountOption(uid, id, key, value) {
+      const a = await ownedAccount(uid, id);
+      const prov = providers[a.type];
+      const opt = (prov?.options ? await prov.options(await providerCtx(a)) : []).find((o) => o.key === key);
+      if (!opt) throw httpError(400, 'unknown setting');
+      if (!opt.choices.some((ch) => ch.value === value)) throw httpError(400, 'that choice is not available for this account');
+      await saveConfig(id)({ ...cfg(a), [key]: value });
+      return accountView(await ownedAccount(uid, id));
+    },
+
     async testPost(uid, id) {
       const a = await ownedAccount(uid, id);
       const res = await providers[a.type].publish({ ...(await providerCtx(a)), text: `Test post from Social Poster ✓ ${new Date().toLocaleString('en-GB', { timeZone: await tzOf(uid) })}`, media: [] });
@@ -204,6 +226,7 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
         const videos = items.filter((x) => x.mime.startsWith('video/'));
         if (videos.length && !m.video) out.push(`${where}: videos are not supported`);
         if (m.videoAlone && videos.length && items.length > 1) out.push(`${where}: a video must be the only attachment`);
+        if (m.videoOnly && items.length && !videos.length) out.push(`${where}: only videos can be posted here`);
         if (m.imageTypes) for (const x of items) if (x.mime.startsWith('image/') && !m.imageTypes.includes(x.mime)) out.push(`${where}: ${x.filename} must be JPEG`);
         if (m.maxImageBytes) for (const x of items) if (x.mime.startsWith('image/') && x.size > m.maxImageBytes) out.push(`${where}: ${x.filename} is over ${m.maxImageBytes / 1e6} MB`);
         if (m.maxBytes) for (const x of items) if (x.size > m.maxBytes) out.push(`${where}: ${x.filename} is too large`);

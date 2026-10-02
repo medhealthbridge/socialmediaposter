@@ -33,7 +33,12 @@ export async function setup(opts = {}) {
   const u2 = (await ctx.auth.createUser({ email: 'b@x.io', password: 'password2' })).id;
   return { ...ctx, u1, u2 };
 }
-export const closeAll = async () => { for (const db of opened.splice(0)) await db.close().catch(() => {}); };
+const servers = [];
+/** Closes every database and fake server, even when a test failed partway through. */
+export const closeAll = async () => {
+  for (const db of opened.splice(0)) await db.close().catch(() => {});
+  for (const srv of servers.splice(0)) await srv.close().catch(() => {});
+};
 
 /** A fake HTTP API. `routes` maps "METHOD /path" (or a function) to a response. Records every request. */
 export async function fakeServer(routes) {
@@ -57,7 +62,10 @@ export async function fakeServer(routes) {
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${srv.address().port}`;
-  return { url, calls, close: () => new Promise((r) => srv.close(r)), find: (m, p) => calls.filter((c) => c.method === m && c.path === p) };
+  const close = () => new Promise((r) => { srv.closeAllConnections(); srv.close(r); });
+  const fake = { url, calls, close, find: (m, p) => calls.filter((c) => c.method === m && c.path === p) };
+  servers.push(fake);
+  return fake;
 }
 
 export const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');

@@ -147,7 +147,7 @@ const P = {
 export const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
 
 // ---------- networks & avatars
-const LETTER = { x: 'X', instagram: 'IG', facebook: 'f', linkedin: 'in', threads: '@', bluesky: 'b', mastodon: 'M', telegram: 'T', discord: 'D', webhook: '⚡', mock: '✓' };
+const LETTER = { x: 'X', instagram: 'IG', facebook: 'f', tiktok: '♪', youtube: '▶', linkedin: 'in', pinterest: 'P', threads: '@', bluesky: 'b', mastodon: 'M', telegram: 'T', discord: 'D', webhook: '⚡', mock: '✓' };
 export const netColor = (type) => state.providers[type]?.color || '#888';
 export const netLabel = (type) => state.providers[type]?.label || type;
 export const netMark = (type, cls = '') => `<span class="netmark ${cls}" style="background:${netColor(type)}" title="${esc(netLabel(type))}">${LETTER[type] || '?'}</span>`;

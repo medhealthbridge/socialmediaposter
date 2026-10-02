@@ -10,12 +10,18 @@ import { createContext, createHandler } from '../src/server.js';
 import { PNG, freshDb } from './helpers.js';
 
 const dbs = [];
-after(async () => { for (const d of dbs) await d.close(); });
+const servers = [];
+// Close everything even when a test fails partway through, so the run can't hang.
+after(async () => {
+  for (const s of servers) { s.closeAllConnections(); await new Promise((r) => s.close(r)); }
+  for (const d of dbs) await d.close();
+});
 async function boot() {
   const db = await freshDb();
   dbs.push(db);
   const ctx = await createContext(db, { vault: createVault(randomBytes(32)), mediaDir: mkdtempSync(join(tmpdir(), 'sp-')), blobToken: '', allowSignup: false });
   const srv = http.createServer(createHandler(ctx)).listen(0, '127.0.0.1');
+  servers.push(srv);
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const call = async (path, { method = 'GET', body, cookie, headers = {}, raw } = {}) => {
@@ -122,6 +128,7 @@ test('works when the host pre-parses the request body (Vercel helpers)', async (
     if (raw && (req.headers['content-type'] || '').includes('json')) req.body = JSON.parse(raw);
     return inner(req, res);
   }).listen(0, '127.0.0.1');
+  servers.push(srv);
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const r = await fetch(`${base}/api/auth/signup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'pre@x.io', password: 'longenough' }) });
@@ -133,6 +140,7 @@ test('works when the host pre-parses the request body (Vercel helpers)', async (
 test('a missing-setup error renders a readable page for browsers, JSON for the API', async () => {
   const handler = createHandler(() => { throw Object.assign(new Error('Set the SECRET_KEY environment variable'), { status: 500, expose: true }); });
   const srv = http.createServer(handler).listen(0, '127.0.0.1');
+  servers.push(srv);
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const page = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
@@ -143,5 +151,58 @@ test('a missing-setup error renders a readable page for browsers, JSON for the A
   assert.match(html, /needs one more step/);
   const json = await fetch(`${base}/api/auth/status`);
   assert.match((await json.json()).error, /Set the SECRET_KEY/);
+  srv.closeAllConnections(); srv.close();
+});
+
+test('MCP endpoint: tools need a valid key, then drive the queue end to end', async () => {
+  const { srv, call, base } = await boot();
+  const { cookie: c } = await call('/api/auth/signup', { method: 'POST', body: { email: 'me@x.io', password: 'longenough' } });
+  const acc = (await call('/api/accounts', { method: 'POST', cookie: c, body: { type: 'mock', name: 'Test' } })).json;
+
+  const rpc = (body, opts = {}) => call('/mcp' + (opts.query || ''), { method: 'POST', body, headers: opts.key ? { authorization: `Bearer ${opts.key}` } : {} });
+  // Discovery works without a key, so a connector can be added before pasting one.
+  const init = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  assert.equal(init.json.result.serverInfo.name, 'social-poster');
+  const tools = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  const names = tools.json.result.tools.map((t) => t.name);
+  assert.ok(names.includes('add_to_queue') && names.includes('publish_post'));
+  for (const t of tools.json.result.tools) assert.equal(t.inputSchema.type, 'object');
+
+  // Using a tool without a key is refused.
+  const denied = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_accounts' } });
+  assert.equal(denied.status, 401);
+  assert.match(denied.json.error.message, /access key/i);
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_accounts' } }, { key: 'sp_wrongkey000000000000' })).status, 401);
+
+  const key = (await call('/api/keys', { method: 'POST', cookie: c, body: { name: 'Claude' } })).json;
+  assert.match(key.secret, /^sp_/);
+  assert.equal((await call('/api/keys', { cookie: c })).json[0].secret, undefined, 'the secret is never listed again');
+
+  const listed = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_accounts' } }, { key: key.secret });
+  assert.match(listed.json.result.content[0].text, /"network": "Test account/);
+  // the key also works in the URL, for connectors that only take a URL
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'list_accounts' } }, { query: `?key=${key.secret}` })).json.result.content[0].text.includes('Test'), true);
+
+  const added = await rpc({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'add_to_queue', arguments: { text: 'Hello from the assistant', account_ids: [acc.id] } } }, { key: key.secret });
+  const post = JSON.parse(added.json.result.content[0].text).added;
+  assert.equal(post.status, 'queued');
+  assert.equal((await call('/api/counts', { cookie: c })).json.queued, 1);
+
+  const published = await rpc({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'publish_post', arguments: { post_id: post.id } } }, { key: key.secret });
+  assert.equal(JSON.parse(published.json.result.content[0].text).result.status, 'published');
+
+  // A failing tool reports the problem instead of breaking the connection.
+  const bad = await rpc({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'publish_post', arguments: { post_id: 9999 } } }, { key: key.secret });
+  assert.equal(bad.status, 200);
+  assert.equal(bad.json.result.isError, true);
+  assert.match(bad.json.result.content[0].text, /not found/);
+
+  // Notifications get no body; one user's key never reaches another user's data.
+  assert.equal((await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, { key: key.secret })).status, 202);
+  await call('/api/users', { method: 'POST', cookie: c, body: { email: 'friend@x.io', password: 'friendpass1' } });
+  const friend = await call('/api/auth/login', { method: 'POST', body: { email: 'friend@x.io', password: 'friendpass1' } });
+  const fkey = (await call('/api/keys', { method: 'POST', cookie: friend.cookie, body: { name: 'theirs' } })).json;
+  const theirs = await rpc({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'list_posts', arguments: { status: 'all' } } }, { key: fkey.secret });
+  assert.match(theirs.json.result.content[0].text, /"count": 0/);
   srv.closeAllConnections(); srv.close();
 });

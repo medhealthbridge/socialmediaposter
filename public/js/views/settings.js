@@ -1,7 +1,7 @@
 import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, busy, confirmBox, copyBox, avatar } from '../core.js';
 import { appSetup } from './accounts.js';
 
-const SECTIONS = [['general', 'General'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
+const SECTIONS = [['general', 'General'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['assistant', 'Assistant access'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export async function render(root, qs) {
@@ -50,6 +50,30 @@ export async function render(root, qs) {
         $('#rmKey')?.addEventListener('click', async () => { await save({ ai: { apiKey: null } }, 'Key removed'); draw(); });
       }];
     },
+    async assistant() {
+      const keys = await api('/keys');
+      const url = state.mcpUrl || `${location.origin}/mcp`;
+      return [`<div class="card card-pad form" style="max-width:none"><h2>${icon('sparkle')} Assistant access</h2>
+        <p class="text-2">Let an AI assistant (like Claude) use Social Poster for you: “draft three posts about X and queue them”, “what did best last month?”. Create a key, then add this address as a custom connector in Claude.</p>
+        <label class="field">Connector URL${copyBox(url)}</label>
+        <div class="list" style="margin:0 -20px">${keys.length ? keys.map((k) => `<div class="item" style="grid-template-columns:minmax(0,1fr) auto"><div><b>${esc(k.name)}</b><div class="muted small">created ${fmt.date(k.created_at)}</div></div><button class="btn sm ghost danger" data-del="${esc(k.id)}">Remove</button></div>`).join('') : '<div class="item"><span class="muted">No keys yet.</span></div>'}</div>
+        <div class="row"><input type="text" id="kname" placeholder="What is it for? e.g. Claude" style="max-width:260px"><button class="btn primary" id="newkey">${icon('plus')} Create key</button></div>
+        <p class="hint">A key can read and write your posts and publish them. Remove it here if you stop using it.</p>
+        <div class="callout">${icon('info')}<div><b>In Claude:</b> Settings → Connectors → Add custom connector → paste the URL above. If it asks for a key, paste the one you created. (You can also add <code>?key=YOUR_KEY</code> to the end of the URL.)</div></div>
+      </div>`, () => {
+        $('#newkey').onclick = busy($('#newkey'), async () => {
+          const k = await api('/keys', { method: 'POST', body: { name: $('#kname').value } });
+          modal({ title: 'Your new key', body: `<p class="text-2">Copy it now — it is not shown again.</p>${copyBox(k.secret)}
+            <label class="field">Or use this full URL${copyBox(`${url}?key=${k.secret}`)}</label>`, actions: [{ label: 'Done', kind: 'primary' }] });
+          draw();
+        });
+        $('#sbody').onclick = async (e) => {
+          const b = e.target.closest('[data-del]');
+          if (b && await confirmBox('Remove this key? Anything using it stops working.', { ok: 'Remove', danger: true })) { await api(`/keys/${b.dataset.del}`, { method: 'DELETE' }); draw(); }
+        };
+      }];
+    },
+
     tracking() {
       const u = state.settings.utm;
       return [`<div class="card card-pad form"><h2>Link tracking (UTM)</h2>
