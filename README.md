@@ -9,7 +9,7 @@ Nothing is posted on a timer: posts wait until you click **Post** (or **Post nex
 1. Import this GitHub repo at [vercel.com/new](https://vercel.com/new). Framework preset: *Other*; leave the build settings empty.
 2. In the project, open **Storage** and add:
    - a **Neon Postgres** database. It sets `DATABASE_URL` for you.
-   - a **Blob** store. It sets `BLOB_READ_WRITE_TOKEN`, used for your photos and videos.
+   - a **Blob** store. It sets `BLOB_READ_WRITE_TOKEN`, used for your photos and videos. (Optional — without it, text-only posting still works and the app says so.)
 3. Under **Settings → Environment Variables**, add `SECRET_KEY`: any long random string (e.g. from `openssl rand -hex 32`). It encrypts your saved logins, so keep it safe and never change it.
 4. Redeploy, open your `https://<project>.vercel.app` address and create your account. The first account is the admin.
 5. Go to **Accounts** and connect your networks.

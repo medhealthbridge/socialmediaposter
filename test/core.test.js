@@ -220,3 +220,23 @@ test('login is rate limited after repeated failures', async () => {
   await assert.rejects(auth.login({ email: 'A@x.io', password: 'password1' }, '1.1.1.1'), /too many/);
   assert.ok((await auth.login({ email: 'A@X.io', password: 'password1' }, '2.2.2.2')).token, 'email is case-insensitive');
 });
+
+test('a read-only host with no Blob store still runs; uploads explain what to connect', async () => {
+  const prev = process.env.VERCEL;
+  process.env.VERCEL = '1';
+  try {
+    const { svc, u1 } = await setup({ mediaDir: '/definitely/not/writable/media' });
+    assert.equal(svc.media.kind, 'none');
+    await assert.rejects(svc.media.save(u1, chunks(JPEG), { filename: 'a.jpg' }), /connect Blob/);
+    await assert.rejects(svc.media.blobToken(u1, {}, {}), /connect Blob/);
+    await assert.rejects(svc.media.register(u1, { url: 'https://x/y.png' }), /connect Blob/);
+    assert.equal(await svc.media.lookup('abc.jpg'), null);
+    assert.deepEqual(await svc.media.list(u1), []);
+    // text-only posting is unaffected
+    const a = await svc.addAccount(u1, { type: 'mock' });
+    const p = await svc.createPost(u1, { text: 'text works without Blob', accountIds: [a.id], publishNow: true });
+    assert.equal(p.status, 'published');
+  } finally {
+    if (prev === undefined) delete process.env.VERCEL; else process.env.VERCEL = prev;
+  }
+});

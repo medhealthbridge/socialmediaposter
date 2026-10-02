@@ -42,7 +42,11 @@ function upload(path, file, headers, onProgress) {
  * Upload a photo/video to the media library. On Vercel the browser sends the file straight to
  * Vercel Blob (no size limit from the serverless function); otherwise it goes to this server.
  */
+/** Shown when the app runs on a read-only host with no Blob store connected. */
+export const NEEDS_BLOB = 'Photos and videos need a Blob store. In your Vercel project open Storage → connect Blob, then redeploy.';
+
 export async function uploadFile(file, onProgress = () => {}) {
+  if (state.storage === 'none') throw new Error(NEEDS_BLOB);
   if (state.storage === 'blob') {
     const { upload } = await import('/vendor/blob-upload.js');
     const safe = (file.name || 'upload').replace(/[^\w.-]+/g, '_').slice(-80);

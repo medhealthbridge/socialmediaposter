@@ -1,8 +1,10 @@
 /**
- * Media storage with two backends:
+ * Media storage with three modes:
  *   - disk:  files in data/media, served from /media/<token>.<ext>   (self-hosting)
  *   - blob:  Vercel Blob (when BLOB_READ_WRITE_TOKEN is set); the browser uploads directly,
  *            so large videos never pass through a size-limited serverless function.
+ *   - none:  a read-only host (Vercel) with no Blob store connected. Text posting works;
+ *            uploads report what to connect instead of crashing the app.
  */
 import { createReadStream, createWriteStream, mkdirSync, statSync } from 'node:fs';
 import { readFile, rename, unlink } from 'node:fs/promises';
@@ -29,8 +31,14 @@ export function sniff(buf) {
 const cleanName = (n) => String(n || 'upload').replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'upload';
 
 export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', blobToken = process.env.BLOB_READ_WRITE_TOKEN } = {}) {
-  const kind = blobToken ? 'blob' : 'disk';
-  if (kind === 'disk') mkdirSync(dir, { recursive: true });
+  const kind = blobToken ? 'blob' : process.env.VERCEL && !process.env.MEDIA_DIR ? 'none' : 'disk';
+  const NEEDS_BLOB = 'Photos and videos need a Blob store. In your Vercel project open Storage → connect Blob, then redeploy.';
+  let dirReady = false;
+  const ensureDir = () => {
+    if (dirReady) return;
+    try { mkdirSync(dir, { recursive: true }); dirReady = true; }
+    catch (e) { throw httpError(500, `cannot write to the media folder (${dir}): ${e.message}`); }
+  };
   const file = (r) => join(dir, `${r.token}.${TYPES[r.mime]}`);
   const urlOf = (r, base = '') => r.url || `${base}/media/${r.token}.${TYPES[r.mime]}`;
   const view = (r) => ({ id: r.id, filename: r.filename, mime: r.mime, size: r.size, alt: r.alt, url: urlOf(r), created_at: r.created_at });
@@ -40,7 +48,9 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
     kind,
     /** Disk backend: stream an upload to a file. */
     async save(uid, chunks, { filename } = {}) {
+      if (kind === 'none') throw httpError(400, NEEDS_BLOB);
       if (kind !== 'disk') throw httpError(400, 'uploads go directly to Blob storage on this server');
+      ensureDir();
       const token = randomBytes(18).toString('base64url');
       const tmp = join(dir, `${token}.part`);
       const out = createWriteStream(tmp);
@@ -68,7 +78,7 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
 
     /** Blob backend: issue a short-lived client upload token (browser → Vercel Blob directly). */
     async blobToken(uid, body, req) {
-      if (kind !== 'blob') throw httpError(400, 'Blob storage is not configured');
+      if (kind !== 'blob') throw httpError(400, kind === 'none' ? NEEDS_BLOB : 'Blob storage is not configured');
       const { handleUpload } = await import('@vercel/blob/client');
       return handleUpload({
         body, request: req, token: blobToken,
@@ -80,6 +90,7 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
     },
     /** Blob backend: record an uploaded blob after checking it really is an allowed media file. */
     async register(uid, { url, filename }) {
+      if (kind === 'none') throw httpError(400, NEEDS_BLOB);
       if (kind !== 'blob' || !BLOB_HOST.test(String(url))) throw httpError(400, 'invalid upload');
       const { head, del } = await blob();
       const info = await head(url, { token: blobToken });
@@ -131,6 +142,7 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
     },
     /** Disk backend: the public /media/<token>.<ext> route. */
     async lookup(name) {
+      if (kind !== 'disk') return null;
       const [token, ext] = String(name).split('.');
       const r = await db.get('SELECT * FROM media WHERE token=?', token || '');
       if (!r || r.url || TYPES[r.mime] !== ext) return null;

@@ -1,4 +1,4 @@
-import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, confirmBox, go, uploadFile } from '../core.js';
+import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, confirmBox, go, uploadFile, NEEDS_BLOB } from '../core.js';
 
 export async function render(root, qs) {
   let tab = qs.get('tab') === 'snippets' ? 'snippets' : 'media';
@@ -9,8 +9,10 @@ export async function render(root, qs) {
 
   async function media() {
     const items = await api('/media');
-    $('#body', root).innerHTML = `<div class="row" style="margin-bottom:14px"><span class="text-2 small">JPEG, PNG, GIF, WebP up to 20 MB · MP4/MOV up to 1 GB. Drop files anywhere here.</span>
-      <button class="btn primary right" id="up">${icon('upload')} Upload</button><input type="file" id="f" multiple hidden accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime"></div>
+    const off = state.storage === 'none';
+    $('#body', root).innerHTML = `${off ? `<div class="callout warn">${icon('alert')}<div>${esc(NEEDS_BLOB)}</div></div>` : ''}
+      <div class="row" style="margin-bottom:14px"><span class="text-2 small">${off ? 'Text posts work without it.' : 'JPEG, PNG, GIF, WebP up to 20 MB · MP4/MOV up to 1 GB. Drop files anywhere here.'}</span>
+      ${off ? '' : `<button class="btn primary right" id="up">${icon('upload')} Upload</button>`}<input type="file" id="f" multiple hidden accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime"></div>
       ${items.length ? `<div class="media-grid" id="grid">${items.map((m) => `<div class="media-card" data-id="${m.id}">
         <div class="pic">${m.mime.startsWith('video/') ? `<video src="${esc(m.url)}" muted preload="metadata" controls></video>` : `<img src="${esc(m.url)}" alt="${esc(m.alt)}" loading="lazy">`}</div>
         <div class="meta"><span class="grow ellipsis" title="${esc(m.filename)}">${esc(m.filename)}<br><span class="muted tiny">${fmt.bytes(m.size)}${m.alt ? ' · alt ✓' : ''}</span></span>
@@ -25,11 +27,10 @@ export async function render(root, qs) {
       }
       media();
     };
-    $('#up', root).onclick = () => $('#f', root).click();
+    $('#up', root)?.addEventListener('click', () => $('#f', root).click());
     $('#f', root).onchange = (e) => upload([...e.target.files]);
     const body = $('#body', root);
-    body.ondragover = (e) => e.preventDefault();
-    body.ondrop = (e) => { e.preventDefault(); upload([...e.dataTransfer.files]); };
+    if (!off) { body.ondragover = (e) => e.preventDefault(); body.ondrop = (e) => { e.preventDefault(); upload([...e.dataTransfer.files]); }; }
     $('#grid', root)?.addEventListener('click', async (e) => {
       const b = e.target.closest('[data-act]'); if (!b) return;
       const m = items.find((x) => x.id === Number(b.closest('[data-id]').dataset.id));

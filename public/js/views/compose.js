@@ -1,4 +1,4 @@
-import { $, $$, api, state, esc, icon, avatar, netLabel, netColor, countFor, richText, toast, toastError, busy, modal, menu, fmt, go, debounce, statusBadge, accountById, refresh, uploadFile } from '../core.js';
+import { $, $$, api, state, esc, icon, avatar, netLabel, netColor, countFor, richText, toast, toastError, busy, modal, menu, fmt, go, debounce, statusBadge, accountById, refresh, uploadFile, NEEDS_BLOB } from '../core.js';
 
 const DRAFT_KEY = 'composer-draft';
 
@@ -198,10 +198,10 @@ export async function render(root, params) {
       s.uploads--; renderThumbs(); update();
     }
   }
-  $('#addMedia', root).onclick = (e) => menu(e.currentTarget, [
+  $('#addMedia', root).onclick = (e) => (state.storage === 'none' ? toast(NEEDS_BLOB, 'bad') : menu(e.currentTarget, [
     { label: 'Upload from device', icon: 'upload', onClick: () => $('#file', root).click() },
     { label: 'Choose from library', icon: 'image', onClick: pickFromLibrary },
-  ]);
+  ]));
   $('#file', root).onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
   const ed = $('#editor', root);
   ed.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); ed.classList.add('drag'); } });
