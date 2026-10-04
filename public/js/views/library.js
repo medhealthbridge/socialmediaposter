@@ -17,6 +17,7 @@ export async function render(root, qs) {
         <div class="pic">${m.mime.startsWith('video/') ? `<video src="${esc(m.url)}" muted preload="metadata" controls></video>` : `<img src="${esc(m.url)}" alt="${esc(m.alt)}" loading="lazy">`}</div>
         <div class="meta"><span class="grow ellipsis" title="${esc(m.filename)}">${esc(m.filename)}<br><span class="muted tiny">${fmt.bytes(m.size)}${m.alt ? ' · alt ✓' : ''}</span></span>
         <button class="btn sm ghost icon" data-act="use" data-tip="Use in a new post">${icon('compose')}</button>
+        ${m.mime.startsWith('image/') ? `<button class="btn sm ghost icon" data-act="crop" data-tip="Crop to a network's shape">${icon('image')}</button>` : ''}
         <button class="btn sm ghost icon" data-act="alt" data-tip="Alt text">${icon('edit')}</button>
         <button class="btn sm ghost icon danger" data-act="del" data-tip="Delete">${icon('trash')}</button></div></div>`).join('')}</div>`
         : `<div class="empty">${icon('image')}<b>No media yet</b><span>Upload once, reuse in any post.</span></div>`}`;
@@ -35,6 +36,7 @@ export async function render(root, qs) {
       const b = e.target.closest('[data-act]'); if (!b) return;
       const m = items.find((x) => x.id === Number(b.closest('[data-id]').dataset.id));
       if (b.dataset.act === 'use') go(`#/compose?media=${m.id}`);
+      if (b.dataset.act === 'crop') { const { cropImage } = await import('../crop.js'); if (await cropImage(m)) media(); }
       if (b.dataset.act === 'del' && await confirmBox('Delete this file? Scheduled posts using it will fail.', { ok: 'Delete', danger: true })) { await api(`/media/${m.id}`, { method: 'DELETE' }); media(); }
       if (b.dataset.act === 'alt') modal({ title: 'Alt text', body: `<textarea id="alt" rows="3" maxlength="1500" placeholder="Describe the image for people using screen readers">${esc(m.alt)}</textarea>`, actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async (d) => { await api(`/media/${m.id}`, { method: 'PATCH', body: { alt: $('#alt', d).value } }); media(); } }] });
     });

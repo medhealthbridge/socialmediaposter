@@ -388,3 +388,11 @@ svg.i.rot90 { transform: rotate(90deg); }
 .thumbs.small-thumbs { padding: 0; }
 .thumbs.small-thumbs .thumb { width: 64px; height: 64px; }
 .pv-part { border-left: 2px solid var(--border); padding-left: 12px; margin-left: 4px; display: grid; gap: 6px; }
+
+/* ---------- cropper */
+.cropper { display: grid; place-items: center; background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px; }
+.cropper canvas { max-width: 100%; touch-action: none; cursor: grab; border-radius: 6px; }
+.cropper canvas:active { cursor: grabbing; }
+input[type=range] { accent-color: var(--accent); width: 100%; }
+.thumb .crop { position: absolute; right: 4px; bottom: 4px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.thumb .crop svg.i { width: 13px; height: 13px; }
