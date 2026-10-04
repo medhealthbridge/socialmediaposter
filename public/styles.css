@@ -381,3 +381,10 @@ svg.i.rot90 { transform: rotate(90deg); }
 .log-item.error { border-left: 3px solid var(--bad); }
 .log-item.warn { border-left: 3px solid var(--warn); }
 .detail { background: var(--surface-2); padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; max-height: 240px; }
+
+/* ---------- thread parts */
+.part { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 12px; display: grid; gap: 8px; background: var(--surface); }
+.part textarea { min-height: 70px; }
+.thumbs.small-thumbs { padding: 0; }
+.thumbs.small-thumbs .thumb { width: 64px; height: 64px; }
+.pv-part { border-left: 2px solid var(--border); padding-left: 12px; margin-left: 4px; display: grid; gap: 6px; }

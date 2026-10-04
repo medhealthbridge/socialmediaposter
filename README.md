@@ -51,6 +51,7 @@ Notes per network:
 - **Scheduling:** pick a date and time, or "next free time" from your weekly posting slots, and posts go out on their own. Evergreen posts repost themselves every N days. See *Automatic publishing* below.
 - **Composer:** pick several accounts; live previews per network; character counters that use each network's rules; checks before you post (limits, media rules, JPEG for Instagram, Bluesky's 1 MB images…); **Post now** or **Add to queue**.
 - **Customize per network:** different text per account, with one-click AI adaptation.
+- **Threads:** add extra parts and they post the right way for each network — a reply chain on X, Bluesky, Mastodon, Threads and Telegram; comments under the post on Instagram, Facebook and LinkedIn (handy for hashtags in the first comment); separate messages on Discord and webhooks. Networks that can't do threads say so before you post.
 - **Media:** drag & drop, paste or a reusable library; alt text; images and video (carousels on Instagram and Threads, media groups on Telegram). On Vercel, uploads go straight from your browser to Blob storage.
 - **AI assistant:** write from an idea, improve, shorten, add hashtags, change tone, custom instructions. Pick your provider in Settings — **Google Gemini** (free tier, no card; key from [AI Studio](https://aistudio.google.com/apikey)) or **Anthropic Claude** (paid). Gemini's model list is fetched from Google, so it stays current; the Flash models are the free ones.
 - **RSS autopilot:** new blog, YouTube or podcast items are added to your queue (or posted instantly) when you open the app.
@@ -91,7 +92,7 @@ The assistant gets these tools: `list_accounts`, `add_to_queue`, `publish_post`,
 ## Development
 
 ```sh
-npm test          # 48 tests on SQLite
+npm test          # 51 tests on SQLite
 npm run test:pg   # the same tests on Postgres (expects one at 127.0.0.1:5433)
 npm run vendor    # rebuild public/vendor/blob-upload.js (browser upload helper)
 ```

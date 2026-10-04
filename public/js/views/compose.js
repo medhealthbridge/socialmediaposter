@@ -9,11 +9,11 @@ const store = {
 };
 
 export async function render(root, params) {
-  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'queue', when: '', recycle: false, recycleDays: 7, recycleLeft: '', notes: '', uploads: 0 };
+  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'queue', when: '', recycle: false, recycleDays: 7, recycleLeft: '', notes: '', uploads: 0, parts: [] };
 
   if (params.get('id')) {
     const p = await api(`/posts/${params.get('id')}`);
-    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, notes: p.notes || '', recycle: !!p.recycle_days, recycleDays: p.recycle_days || 7, recycleLeft: p.recycle_left ?? '' });
+    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, parts: p.parts.map((x) => ({ text: x.text, media: x.mediaItems.filter((m) => !m.missing) })), notes: p.notes || '', recycle: !!p.recycle_days, recycleDays: p.recycle_days || 7, recycleLeft: p.recycle_left ?? '' });
     if (p.scheduled_at) { s.mode = 'schedule'; s.when = toLocalInput(p.scheduled_at); }
   } else {
     const saved = store.get();
@@ -57,6 +57,8 @@ export async function render(root, params) {
             </div>
             <input type="file" id="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime" multiple hidden>
           </div>
+          <div id="parts" class="col"></div>
+          <button type="button" class="btn ghost sm" id="addPart" style="justify-self:start">${icon('plus')} Add to thread</button>
           <div id="overrides" class="col"></div>
         </section>
 
@@ -99,7 +101,7 @@ export async function render(root, params) {
   const textFor = (acc) => (s.customize && s.overrides[acc.id] !== undefined ? s.overrides[acc.id] : s.text);
   const persist = debounce(() => {
     if (s.id) return;
-    store.set({ text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.overrides, customize: s.customize, mode: s.mode, when: s.when, notes: s.notes });
+    store.set({ text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.overrides, customize: s.customize, mode: s.mode, when: s.when, notes: s.notes, parts: s.parts.map((x) => ({ text: x.text, media: x.media.map((m) => m.id) })) });
   }, 400);
 
   // ---------- accounts
@@ -114,7 +116,7 @@ export async function render(root, params) {
   $('#accs', root).onclick = (e) => {
     if (e.target.closest('#all')) { s.accountIds = s.accountIds.size === state.accounts.length ? new Set() : new Set(state.accounts.map((a) => a.id)); }
     else { const c = e.target.closest('.chip'); if (!c) return; const id = Number(c.dataset.id); s.accountIds.has(id) ? s.accountIds.delete(id) : s.accountIds.add(id); }
-    renderAccounts(); renderOverrides(); update();
+    renderAccounts(); renderOverrides(); renderParts(); update();
   };
 
   // ---------- counters, previews, problems
@@ -124,6 +126,14 @@ export async function render(root, params) {
       const n = countFor(t, s.text), lim = state.providers[t].limit;
       return `<span class="pill ${n > lim ? 'over' : ''}" data-tip="${esc(netLabel(t))}: ${n} of ${lim} characters"><span class="dot" style="background:${netColor(t)}"></span>${lim - n}</span>`;
     }).join('') || (s.customize ? '' : `<span class="muted small">${[...s.text].length} characters</span>`);
+    const first = [...new Set(selected().map((a) => a.type))][0];
+    $$('.part', root).forEach((el, i) => {
+      const pill = el.querySelector('[data-count]');
+      if (!pill || !first) return;
+      const n = countFor(first, s.parts[i].text), lim = state.providers[first].limit;
+      pill.className = `pill ${n > lim ? 'over' : ''}`;
+      pill.textContent = `${n} / ${lim}`;
+    });
     $$('.override', root).forEach((el) => {
       const a = accountById(el.dataset.id); if (!a) return;
       const n = countFor(a.type, textFor(a)), lim = state.providers[a.type].limit;
@@ -138,7 +148,8 @@ export async function render(root, params) {
     if (!accs.length) { $('#previews', root).innerHTML = `<div class="card empty">${icon('eye')}<div>Pick accounts to see live previews.</div></div>`; return; }
     $('#previews', root).innerHTML = `<div class="row"><h3>Preview</h3><span class="muted small">how it will look</span></div>` + accs.slice(0, 8).map((a) => {
       const t = textFor(a), lim = state.providers[a.type].limit, ig = a.type === 'instagram';
-      const body = `<div class="pv-text">${richText(t, lim)}</div>`;
+      const body = `<div class="pv-text">${richText(t, lim)}</div>`
+        + (s.parts.length ? s.parts.map((part, i) => `<div class="pv-part"><span class="muted tiny">${state.providers[a.type].thread === 'comment' ? 'comment' : `${i + 2}/${s.parts.length + 1}`}</span><div class="pv-text">${richText(part.text, lim)}</div>${mediaHtml(part.media, false)}</div>`).join('') : '');
       return `<article class="pv"><div class="pv-head">${avatar(a)}<div class="grow" style="min-width:0"><div class="pv-name ellipsis">${esc(a.name)}</div><div class="pv-handle ellipsis">${esc(a.handle || netLabel(a.type))} · now</div></div><span class="muted tiny">${esc(netLabel(a.type))}</span></div>
         ${ig ? mediaHtml(s.media, true) + body : body + mediaHtml(s.media, false)}
         ${ig && !s.media.length ? `<div class="problem">${icon('alert')}Instagram needs an image or video</div>` : ''}
@@ -159,6 +170,47 @@ export async function render(root, params) {
   function update() { renderCounts(); renderPreviews(); checkProblems(); persist(); }
   ta.oninput = () => { s.text = ta.value; update(); };
   $('#notes', root).oninput = (e) => { s.notes = e.target.value; persist(); };
+
+  // ---------- thread parts
+  function renderParts() {
+    const types = [...new Set(selected().map((a) => a.type))];
+    const cannot = types.filter((t) => (state.providers[t].thread || 'none') === 'none');
+    const comments = types.filter((t) => state.providers[t].thread === 'comment');
+    $('#parts', root).innerHTML = s.parts.map((part, i) => `
+      <div class="part" data-i="${i}">
+        <div class="row"><span class="badge nodot">${i + 2}</span><span class="muted small">${comments.length ? 'posted as a comment on ' + comments.map((t) => netLabel(t)).join(', ') : 'reply in the thread'}</span>
+          <span class="right row">
+            <span class="pill" data-count></span>
+            <button class="btn ghost sm icon" data-pact="media" data-tip="Add media">${icon('image')}</button>
+            <button class="btn ghost sm icon" data-pact="up" data-tip="Move up" ${i === 0 ? 'disabled' : ''}>${icon('chevL', 'rot90')}</button>
+            <button class="btn ghost sm icon danger" data-pact="rm" data-tip="Remove">${icon('trash')}</button>
+          </span></div>
+        <textarea rows="3" placeholder="Next part of the thread…">${esc(part.text)}</textarea>
+        <div class="thumbs small-thumbs">${part.media.map((m, j) => `<div class="thumb" data-j="${j}">${m.mime.startsWith('video/') ? `<video src="${esc(m.url)}" muted preload="metadata"></video>` : `<img src="${esc(m.url)}" alt="">`}<button class="x" data-pact="rmmedia" aria-label="Remove">✕</button></div>`).join('')}</div>
+      </div>`).join('')
+      + (s.parts.length && cannot.length ? `<div class="problem">${icon('alert')}<span>${esc(cannot.map((t) => netLabel(t)).join(', '))} can't do threads — remove those accounts or the extra parts.</span></div>` : '');
+    $('#addPart', root).innerHTML = `${icon('plus')} ${s.parts.length ? 'Add another part' : 'Add to thread'}`;
+    renderCounts();
+  }
+  $('#addPart', root).onclick = () => { s.parts.push({ text: '', media: [] }); renderParts(); update(); setTimeout(() => $$('#parts textarea', root).at(-1)?.focus()); };
+  $('#parts', root).addEventListener('input', (e) => {
+    const box = e.target.closest('.part'); if (!box) return;
+    s.parts[Number(box.dataset.i)].text = e.target.value;
+    update();
+  });
+  $('#parts', root).addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-pact]'); if (!b) return;
+    const i = Number(b.closest('.part').dataset.i);
+    if (b.dataset.pact === 'rm') s.parts.splice(i, 1);
+    if (b.dataset.pact === 'up') [s.parts[i - 1], s.parts[i]] = [s.parts[i], s.parts[i - 1]];
+    if (b.dataset.pact === 'rmmedia') s.parts[i].media.splice(Number(b.closest('.thumb').dataset.j), 1);
+    if (b.dataset.pact === 'media') {
+      if (state.storage === 'none') return toast(NEEDS_BLOB, 'bad');
+      const picked = await pickMedia();
+      if (picked) s.parts[i].media.push(...picked);
+    }
+    renderParts(); update();
+  });
 
   // ---------- per-network overrides
   function renderOverrides() {
@@ -230,6 +282,21 @@ export async function render(root, params) {
         onOpen: (d) => $('#altText', d).focus() });
     }
   };
+  /** Pick media from the library and return the chosen items. */
+  function pickMedia() {
+    return new Promise(async (resolve) => {
+      const lib = await api('/media');
+      if (!lib.length) { toast('Upload something in the Library first'); return resolve(null); }
+      const chosen = new Set();
+      let done = false;
+      const m = modal({ title: 'Choose media', wide: true,
+        body: `<div class="media-grid" id="pickp">${lib.map((x) => `<div class="media-card" data-id="${x.id}" role="button" tabindex="0"><div class="pic">${x.mime.startsWith('video/') ? `<video src="${esc(x.url)}" muted preload="metadata"></video>` : `<img src="${esc(x.url)}" alt="" loading="lazy">`}</div><div class="meta ellipsis">${esc(x.filename)}</div></div>`).join('')}</div>`,
+        actions: [{ label: 'Cancel' }, { label: 'Add', kind: 'primary', onClick: () => { done = true; resolve(lib.filter((x) => chosen.has(x.id))); } }],
+        onOpen: (d) => { $('#pickp', d).onclick = (e) => { const c = e.target.closest('.media-card'); if (!c) return; const id = Number(c.dataset.id); chosen.has(id) ? chosen.delete(id) : chosen.add(id); c.classList.toggle('sel'); }; } });
+      m.el.addEventListener('close', () => !done && resolve(null));
+    });
+  }
+
   async function pickFromLibrary() {
     const lib = await api('/media');
     const chosen = new Set();
@@ -338,7 +405,7 @@ export async function render(root, params) {
 
   // ---------- submit
   function payload() {
-    return { text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.customize ? s.overrides : {} };
+    return { text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.customize ? s.overrides : {}, parts: s.parts.map((x) => ({ text: x.text, media: x.media.map((m) => m.id) })) };
   }
   $('#submit', root).onclick = busy($('#submit', root), async () => {
     if (s.uploads) return toast('Wait for uploads to finish');
@@ -376,6 +443,6 @@ export async function render(root, params) {
   $('#dup', root)?.addEventListener('click', async (e) => { e.preventDefault(); const d = await api(`/posts/${s.id}/duplicate`, { method: 'POST' }); go(`#/compose?id=${d.id}`); });
   if (readOnly) $$('textarea, input, .seg button, #submit, .tools .btn', root).forEach((el) => { el.disabled = true; });
 
-  renderAccounts(); renderThumbs(); renderOverrides(); renderWhen(); update();
+  renderAccounts(); renderThumbs(); renderParts(); renderOverrides(); renderWhen(); update();
   if (!readOnly) ta.focus();
 }

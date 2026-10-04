@@ -29,7 +29,7 @@ const schema = (pg) => {
     id ${id}, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, media TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'queued', position INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'manual', claimed_at TEXT, posted_at TEXT, scheduled_at TEXT,
-    recycle_days INTEGER, recycle_left INTEGER, created_at TEXT NOT NULL DEFAULT ${now});
+    recycle_days INTEGER, recycle_left INTEGER, parts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT ${now});
   CREATE TABLE IF NOT EXISTS deliveries (
     id ${id}, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending',
@@ -76,7 +76,7 @@ async function openSqlite(path) {
   const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
   if (cols('posts').size) {
     const add = { accounts: { user_id: 'INTEGER', handle: 'TEXT', avatar: 'TEXT', external_id: 'TEXT', profile_url: 'TEXT', status: "TEXT NOT NULL DEFAULT 'ok'", last_error: 'TEXT' },
-      posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''", source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT', recycle_days: 'INTEGER', recycle_left: 'INTEGER' },
+      posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''", source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT', recycle_days: 'INTEGER', recycle_left: 'INTEGER', parts: "TEXT NOT NULL DEFAULT '[]'" },
       deliveries: { text_override: 'TEXT', remote_id: 'TEXT', metrics: 'TEXT', metrics_at: 'TEXT' }, media: { url: 'TEXT' } };
     for (const [t, defs] of Object.entries(add)) {
       const have = cols(t);

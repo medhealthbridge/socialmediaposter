@@ -23,7 +23,7 @@ export const lengthOf = (type, text) => (providers[type].length ? providers[type
 export function publicProviders() {
   return Object.fromEntries(Object.values(providers).map((p) => [p.id, {
     id: p.id, label: p.label, color: p.color, limit: p.limit, media: p.media, connector: p.connector || null,
-    fields: p.fields || null, metrics: !!p.metrics, options: !!p.options,
+    fields: p.fields || null, metrics: !!p.metrics, options: !!p.options, thread: p.thread || 'none',
   }]));
 }
 

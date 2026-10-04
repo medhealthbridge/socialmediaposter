@@ -81,8 +81,9 @@ async function uploadMedia(m, headers) {
 export const provider = {
   id: 'x', label: 'X', color: '#111111', limit: 280, length: lengthUrlsAs(23),
   media: { max: 4, video: true },
+  thread: 'native',
   connector: 'x',
-  async publish({ config, app, text, media, saveConfig }) {
+  async publish({ config, app, text, media, saveConfig, replyTo }) {
     const c = await fresh(config, app, saveConfig);
     const headers = { authorization: `Bearer ${c.accessToken}` };
     const ids = [];
@@ -93,8 +94,11 @@ export const provider = {
       }
       ids.push(id);
     }
-    const { data } = await request(`${endpoints.api}/2/tweets`, { headers, json: { text, ...(ids.length && { media: { media_ids: ids } }) } });
-    return { id: data.data.id, url: `https://x.com/${c.username || 'i'}/status/${data.data.id}` };
+    const { data } = await request(`${endpoints.api}/2/tweets`, {
+      headers,
+      json: { text, ...(ids.length && { media: { media_ids: ids } }), ...(replyTo && { reply: { in_reply_to_tweet_id: String(replyTo) } }) },
+    });
+    return { id: data.data.id, url: `https://x.com/${c.username || 'i'}/status/${data.data.id}`, ref: data.data.id };
   },
   async metrics({ config, app, remoteId, saveConfig }) {
     const c = await fresh(config, app, saveConfig);

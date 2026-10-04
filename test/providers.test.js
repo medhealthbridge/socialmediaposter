@@ -552,3 +552,86 @@ test('the log credits the right actor: you, the agent, the assistant or the time
   assert.equal(log.find((e) => e.kind === 'published').actor, 'timer', 'the timer publishing is credited to the timer');
   await fake.close();
 });
+
+test('threads: X and Bluesky chain replies, Mastodon too', async () => {
+  const xCalls = [];
+  const xFake = await fakeServer({
+    'POST /2/tweets': (c) => { xCalls.push(c.json); return { data: { id: `t${xCalls.length}` } }; },
+  });
+  const bskyFake = await fakeServer({
+    'POST /xrpc/com.atproto.server.createSession': { did: 'did:me', handle: 'me.bsky.social', accessJwt: 'j' },
+    'POST /xrpc/com.atproto.repo.createRecord': (c) => ({ uri: `at://me/post/${c.json.record.text.length}`, cid: `cid${c.json.record.text.length}` }),
+  });
+  Object.assign(X.endpoints, { api: xFake.url });
+  const { svc, u1 } = await setup();
+  const x = await svc.upsertOAuthAccount(u1, { type: 'x', name: 'X', external_id: '1', config: { accessToken: 't', refreshToken: 'r', expiresAt: new Date(Date.now() + 9e6).toISOString(), username: 'me' } });
+  const bsky = await svc.addAccount(u1, { type: 'bluesky', config: { handle: 'me.bsky.social', password: 'p', service: bskyFake.url } });
+
+  const post = await svc.createPost(u1, {
+    text: 'one', parts: [{ text: 'two' }, { text: 'three!' }],
+    accountIds: [x.id, bsky.id], publishNow: true,
+  });
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  assert.equal(post.parts.length, 2);
+
+  // X: each reply points at the one before it
+  assert.deepEqual(xCalls.map((c) => c.text), ['one', 'two', 'three!']);
+  assert.equal(xCalls[0].reply, undefined);
+  assert.equal(xCalls[1].reply.in_reply_to_tweet_id, 't1');
+  assert.equal(xCalls[2].reply.in_reply_to_tweet_id, 't2');
+
+  // Bluesky: every reply names the parent and the first post of the thread
+  const recs = bskyFake.find('POST', '/xrpc/com.atproto.repo.createRecord').map((c) => c.json.record);
+  assert.equal(recs[0].reply, undefined);
+  assert.equal(recs[1].reply.root.uri, 'at://me/post/3');
+  assert.equal(recs[1].reply.parent.uri, 'at://me/post/3');
+  assert.equal(recs[2].reply.root.uri, 'at://me/post/3', 'root stays the first post');
+  assert.equal(recs[2].reply.parent.uri, 'at://me/post/3');
+  assert.ok(recs[2].reply.parent.cid, 'replies carry the cid Bluesky needs');
+  await xFake.close(); await bskyFake.close();
+});
+
+test('threads: extra parts become comments on Instagram and LinkedIn', async () => {
+  const meta = await fakeServer({
+    'POST /v23.0/IG1/media': { id: 'C1' },
+    'GET /v23.0/C1': { status_code: 'FINISHED' },
+    'POST /v23.0/IG1/media_publish': { id: 'IGPOST' },
+    'GET /v23.0/IGPOST': { permalink: 'https://instagram.com/p/x' },
+    'POST /v23.0/IGPOST/comments': { id: 'CMT1' },
+  });
+  Object.assign(META.endpoints, { graph: meta.url, video: meta.url, www: meta.url });
+  const { svc, u1 } = await setup();
+  await svc.settings.update(u1, { publicUrl: 'https://poster.example.com' });
+  const ig = await svc.upsertOAuthAccount(u1, { type: 'instagram', name: 'IG', external_id: 'IG1', config: { igId: 'IG1', token: 't' } });
+  const jpg = await svc.media.save(u1, chunks(JPEG), { filename: 'a.jpg' });
+
+  // media in a comment is refused up front
+  assert.match((await svc.problems(u1, { text: 'hi', media: [jpg.id], accountIds: [ig.id], parts: [{ text: 'tags', media: [jpg.id] }] })).join(), /comments can only be text/);
+
+  const post = await svc.createPost(u1, { text: 'Look at this', media: [jpg.id], parts: [{ text: '#food #recipe' }], accountIds: [ig.id], publishNow: true });
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  const cmt = meta.find('POST', '/v23.0/IGPOST/comments')[0];
+  assert.equal(cmt.form.message, '#food #recipe', 'the hashtags land in the first comment');
+  await meta.close();
+});
+
+test('threads: networks that cannot do them say so, and Telegram replies', async () => {
+  const tg = await fakeServer({
+    'GET /botT/getChat': { ok: true, result: { id: -1, title: 'Chan', username: 'chan' } },
+    'POST /botT/sendMessage': (c) => ({ ok: true, result: { message_id: c.json.text.length } }),
+  });
+  SIMPLE.endpoints.telegram = tg.url;
+  const { svc, u1 } = await setup();
+  const pin = await svc.upsertOAuthAccount(u1, { type: 'pinterest', name: 'Board', external_id: 'b1', config: { accessToken: 't', refreshToken: 'r', expiresAt: new Date(Date.now() + 9e6).toISOString(), boardId: 'B1' } });
+  const tel = await svc.addAccount(u1, { type: 'telegram', config: { token: 'T', chatId: '@chan' } });
+  const jpg = await svc.media.save(u1, chunks(JPEG), { filename: 'a.jpg' });
+
+  assert.match((await svc.problems(u1, { text: 'a', media: [jpg.id], accountIds: [pin.id], parts: [{ text: 'b' }] })).join(), /can't do threads/);
+
+  const post = await svc.createPost(u1, { text: 'first', parts: [{ text: 'second' }], accountIds: [tel.id], publishNow: true });
+  assert.equal(post.status, 'published', JSON.stringify(post.deliveries));
+  const msgs = tg.find('POST', '/botT/sendMessage');
+  assert.equal(msgs[0].json.reply_parameters, undefined);
+  assert.equal(msgs[1].json.reply_parameters.message_id, 5, 'the second message replies to the first');
+  await tg.close();
+});

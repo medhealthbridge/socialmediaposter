@@ -67,7 +67,15 @@ async function uploadVideo(m, config, app, owner) {
 export const provider = {
   id: 'linkedin', label: 'LinkedIn', color: '#0a66c2', limit: 3000,
   media: { max: 9, video: true, videoAlone: true },
+  thread: 'comment',
   connector: 'linkedin',
+  async comment({ config, app, text, replyTo }) {
+    await request(`${endpoints.api}/rest/socialActions/${encodeURIComponent(replyTo)}/comments`, {
+      headers: headers(config, app),
+      json: { actor: `urn:li:person:${config.sub}`, object: replyTo, message: { text: linkedinText(text) } },
+    });
+    return { id: null, url: null, ref: replyTo };
+  },
   async publish({ config, app, text, media }) {
     if (config.expiresAt && new Date(config.expiresAt) < new Date()) throw new ProviderError('401 LinkedIn login expired, reconnect the account', 401);
     const owner = `urn:li:person:${config.sub}`;
@@ -86,6 +94,6 @@ export const provider = {
     }
     const r = await request(`${endpoints.api}/rest/posts`, { headers: headers(config, app), json: body });
     const urn = r.headers.get('x-restli-id') || r.data.id;
-    return { id: urn, url: urn ? `https://www.linkedin.com/feed/update/${urn}/` : null };
+    return { id: urn, url: urn ? `https://www.linkedin.com/feed/update/${urn}/` : null, ref: urn };
   },
 };

@@ -42,6 +42,7 @@ export const connector = {
 export const provider = {
   id: 'mastodon', label: 'Mastodon', color: '#6364ff', limit: 500, length: lengthUrlsAs(23),
   media: { max: 4, video: true },
+  thread: 'native',
   connector: 'mastodon',
   // Manual alternative to the login flow.
   fields: [
@@ -53,7 +54,7 @@ export const provider = {
     const { data: me } = await request(`${config.instance}/api/v1/accounts/verify_credentials`, { headers: auth(config) });
     return { name: me.display_name || me.username, handle: `@${me.acct}@${new URL(config.instance).host}`, avatar: me.avatar, profile_url: me.url, external_id: `${new URL(config.instance).host}:${me.id}` };
   },
-  async publish({ config, text, media }) {
+  async publish({ config, text, media, replyTo }) {
     const ids = [];
     for (const m of media) {
       const fd = new FormData();
@@ -67,9 +68,9 @@ export const provider = {
     }
     const { data } = await request(`${config.instance}/api/v1/statuses`, {
       headers: { ...auth(config), 'idempotency-key': `${Date.now()}-${Math.random()}` },
-      json: { status: text, media_ids: ids, visibility: config.visibility || 'public' },
+      json: { status: text, media_ids: ids, visibility: config.visibility || 'public', ...(replyTo && { in_reply_to_id: String(replyTo) }) },
     });
-    return { id: data.id, url: data.url };
+    return { id: data.id, url: data.url, ref: data.id };
   },
   async metrics({ config, remoteId }) {
     const { data } = await request(`${config.instance}/api/v1/statuses/${remoteId}`, { headers: auth(config) });

@@ -45,9 +45,10 @@ export async function refreshIfNeeded(config, saveConfig) {
 export const provider = {
   id: 'threads', label: 'Threads', color: '#000000', limit: 500, length: graphemes,
   media: { max: 10, video: true },
+  thread: 'native',
   connector: 'threads',
   refreshIfNeeded,
-  async publish({ config, text, media, saveConfig }) {
+  async publish({ config, text, media, saveConfig, replyTo }) {
     const c = await refreshIfNeeded(config, saveConfig);
     const base = `${endpoints.graph}/v1.0/${c.userId}`;
     const create = async (params) => (await request(`${base}/threads`, { form: { access_token: c.token, ...params } })).data.id;
@@ -58,18 +59,19 @@ export const provider = {
     }, { tries: 100, every: 3000, what: 'Threads media processing' });
     const item = (m, extra) => (m.mime.startsWith('video/') ? { media_type: 'VIDEO', video_url: publicUrlOf(m, 'Threads'), ...extra } : { media_type: 'IMAGE', image_url: publicUrlOf(m, 'Threads'), ...extra });
     let id;
-    if (!media.length) id = await create({ media_type: 'TEXT', text });
-    else if (media.length === 1) id = await create(item(media[0], { text }));
+    const reply = replyTo ? { reply_to_id: String(replyTo) } : {};
+    if (!media.length) id = await create({ media_type: 'TEXT', text, ...reply });
+    else if (media.length === 1) id = await create(item(media[0], { text, ...reply }));
     else {
       const children = [];
       for (const m of media) { const ch = await create(item(m, { is_carousel_item: true })); await ready(ch); children.push(ch); }
-      id = await create({ media_type: 'CAROUSEL', children: children.join(','), text });
+      id = await create({ media_type: 'CAROUSEL', children: children.join(','), text, ...reply });
     }
     if (media.length) await ready(id);
     const { data } = await request(`${base}/threads_publish`, { form: { access_token: c.token, creation_id: id } });
     let url = null;
     try { url = (await request(`${endpoints.graph}/v1.0/${data.id}`, { query: { access_token: c.token, fields: 'permalink' } })).data.permalink; } catch { /* cosmetic */ }
-    return { id: data.id, url };
+    return { id: data.id, url, ref: data.id };
   },
   async metrics({ config, remoteId }) {
     const { data } = await request(`${endpoints.graph}/v1.0/${remoteId}/insights`, { query: { access_token: config.token, metric: 'likes,replies,reposts,quotes,views' } });

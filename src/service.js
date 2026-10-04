@@ -60,13 +60,14 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     const ids = posts.map((p) => p.id);
     const ds = await db.all(`SELECT d.*, a.name AS account_name, a.type AS account_type, a.avatar AS account_avatar, a.handle AS account_handle
       FROM deliveries d JOIN accounts a ON a.id = d.account_id WHERE d.post_id IN ${inList(ids)} ORDER BY d.id`, ...ids);
-    const mediaIds = [...new Set(posts.flatMap((p) => J(p.media, [])))];
+    const mediaIds = [...new Set(posts.flatMap((p) => [...J(p.media, []), ...J(p.parts, []).flatMap((x) => x.media || [])]))];
     const mm = await media.getMany(uid, mediaIds);
     return posts.map((p) => {
       const mine = ds.filter((d) => d.post_id === p.id).map((d) => ({ ...d, metrics: J(d.metrics, null) }));
       const mids = J(p.media, []);
+      const parts = J(p.parts, []).map((x) => ({ ...x, mediaItems: (x.media || []).map((id) => mm.get(id) || { id, missing: true }) }));
       return {
-        ...p, media: mids, mediaItems: mids.map((id) => mm.get(id) || { id, missing: true }), deliveries: mine,
+        ...p, media: mids, parts, mediaItems: mids.map((id) => mm.get(id) || { id, missing: true }), deliveries: mine,
         overrides: Object.fromEntries(mine.filter((d) => d.text_override).map((d) => [d.account_id, d.text_override])),
       };
     });
@@ -78,6 +79,9 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     accountIds: b.accountIds === undefined ? undefined : ints(b.accountIds),
     overrides: b.overrides === undefined ? undefined : Object.fromEntries(Object.entries(b.overrides || {}).filter(([, v]) => typeof v === 'string' && v.trim()).map(([k, v]) => [Number(k), v.replace(/\r\n/g, '\n')])),
     notes: typeof b.notes === 'string' ? b.notes.slice(0, 5000) : undefined,
+    parts: b.parts === undefined ? undefined : (Array.isArray(b.parts) ? b.parts : [])
+      .map((x) => ({ text: String(x?.text ?? '').replace(/\r\n/g, '\n'), media: ints(x?.media).slice(0, 20) }))
+      .filter((x) => x.text.trim() || x.media.length).slice(0, 25),
     recycleDays: b.recycleDays === undefined ? undefined : (Number(b.recycleDays) > 0 ? Math.min(365, Math.floor(Number(b.recycleDays))) : null),
     recycleLeft: b.recycleLeft === undefined ? undefined : (b.recycleLeft === null || b.recycleLeft === '' ? null : Math.max(0, Math.floor(Number(b.recycleLeft)))),
   });
@@ -233,10 +237,11 @@ const whenFrom = (body, slot) => {
     },
 
     /** Human-readable problems for publishing this content to these accounts. */
-    async problems(uid, { text, media: mediaIds, accountIds, overrides = {} }) {
+    async problems(uid, { text, media: mediaIds, accountIds, overrides = {}, parts = [] }) {
       const out = [];
-      const mm = await media.getMany(uid, mediaIds);
-      for (const id of mediaIds) if (!mm.has(id)) out.push(`attached media #${id} no longer exists`);
+      const allIds = [...new Set([...mediaIds, ...parts.flatMap((x) => x.media || [])])];
+      const mm = await media.getMany(uid, allIds);
+      for (const id of allIds) if (!mm.has(id)) out.push(`attached media #${id} no longer exists`);
       const items = mediaIds.map((id) => mm.get(id)).filter(Boolean);
       if (!accountIds.length) out.push('pick at least one account');
       for (const aid of accountIds) {
@@ -261,6 +266,23 @@ const whenFrom = (body, slot) => {
         if (m.maxBytes) for (const x of items) if (x.size > m.maxBytes) out.push(`${where}: ${x.filename} is too large`);
         const v = p.validate?.(t);
         if (v) out.push(`${where}: ${v}`);
+
+        // Extra parts of a thread follow the same rules as the first post.
+        if (parts.length) {
+          const how = p.thread || 'none';
+          if (how === 'none') out.push(`${where}: this network can't do threads — keep it to one post`);
+          else {
+            parts.forEach((part, i) => {
+              const n = `${where} part ${i + 2}`;
+              const partItems = (part.media || []).map((id) => mm.get(id)).filter(Boolean);
+              if (!part.text.trim() && !partItems.length) out.push(`${n}: nothing to post`);
+              const plen = lengthOf(a.type, part.text);
+              if (plen > p.limit) out.push(`${n}: ${plen}/${p.limit} characters`);
+              if (how === 'comment' && partItems.length) out.push(`${n}: comments can only be text on this network`);
+              if (partItems.length > (m.max ?? 0)) out.push(`${n}: at most ${m.max} attachments`);
+            });
+          }
+        }
       }
       return out;
     },
@@ -271,9 +293,9 @@ const whenFrom = (body, slot) => {
 
     async insertPost(uid, c, { source = 'manual', when = null } = {}) {
       const pos = (await db.get("SELECT COALESCE(MAX(position), 0) AS m FROM posts WHERE user_id=? AND status='queued'", uid)).m + 1;
-      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source,scheduled_at,recycle_days,recycle_left) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source,scheduled_at,recycle_days,recycle_left,parts) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
         uid, c.text, JSON.stringify(c.media), when ? 'scheduled' : 'queued', pos, c.notes ?? '', source,
-        when ? when.toISOString() : null, c.recycleDays ?? null, c.recycleLeft ?? null);
+        when ? when.toISOString() : null, c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []));
       for (const aid of c.accountIds) await db.run('INSERT INTO deliveries(post_id,account_id,text_override) VALUES (?,?,?)', id, aid, c.overrides?.[aid] ?? null);
       return id;
     },
@@ -281,7 +303,7 @@ const whenFrom = (body, slot) => {
     /** Add a post to the queue; with publishNow it is published right away. */
     async createPost(uid, body, { source } = {}) {
       const n = normalize(body);
-      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, recycleDays: n.recycleDays, recycleLeft: n.recycleLeft };
+      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, parts: n.parts ?? [], recycleDays: n.recycleDays, recycleLeft: n.recycleLeft };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
       if (body.useSlot && !(await svc.getSlots(uid)).length) throw httpError(400, 'No posting times set yet — add some in Settings → Scheduling');
@@ -303,6 +325,7 @@ const whenFrom = (body, slot) => {
       const n = normalize(body);
       const c = {
         text: n.text ?? p.text, media: n.media ?? p.media, notes: n.notes ?? p.notes,
+        parts: n.parts ?? p.parts.map(({ text, media: m }) => ({ text, media: m })),
         accountIds: n.accountIds ?? p.deliveries.map((d) => d.account_id), overrides: n.overrides ?? p.overrides,
         recycleDays: n.recycleDays !== undefined ? n.recycleDays : p.recycle_days,
         recycleLeft: n.recycleLeft !== undefined ? n.recycleLeft : p.recycle_left,
@@ -315,10 +338,10 @@ const whenFrom = (body, slot) => {
         : body.scheduledAt !== undefined ? whenFrom(body, null)
         : p.scheduled_at ? new Date(p.scheduled_at) : null;
       if (reschedule) await svc.validate(uid, { ...c, accountIds: c.accountIds });
-      await db.run('UPDATE posts SET text=?, media=?, notes=?, scheduled_at=?, status=?, recycle_days=?, recycle_left=? WHERE id=?',
+      await db.run('UPDATE posts SET text=?, media=?, notes=?, scheduled_at=?, status=?, recycle_days=?, recycle_left=?, parts=? WHERE id=?',
         c.text, JSON.stringify(c.media), c.notes ?? '', reschedule ? reschedule.toISOString() : null,
         reschedule ? 'scheduled' : p.status === 'scheduled' ? 'queued' : p.status,
-        c.recycleDays ?? null, c.recycleLeft ?? null, id);
+        c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []), id);
       for (const d of p.deliveries) {
         if (d.status !== 'published' && !c.accountIds.includes(d.account_id)) await db.run('DELETE FROM deliveries WHERE id=?', d.id);
       }
@@ -355,6 +378,7 @@ const whenFrom = (body, slot) => {
       const p = await svc.getPost(uid, id);
       const nid = await svc.insertPost(uid, {
         text: p.text, media: p.media.filter((m) => p.mediaItems.some((x) => x.id === m && !x.missing)),
+        parts: p.parts.map(({ text, media: m }) => ({ text, media: m })),
         accountIds: p.deliveries.map((d) => d.account_id), overrides: p.overrides, notes: p.notes,
       });
       return svc.getPost(uid, nid);
@@ -366,7 +390,7 @@ const whenFrom = (body, slot) => {
       const p = await svc.getPost(uid, id);
       if (p.status === 'published') throw httpError(409, 'already published');
       const todo = p.deliveries.filter((d) => d.status !== 'published');
-      await svc.validate(uid, { text: p.text, media: p.media, accountIds: todo.map((d) => d.account_id), overrides: p.overrides });
+      await svc.validate(uid, { text: p.text, media: p.media, parts: p.parts, accountIds: todo.map((d) => d.account_id), overrides: p.overrides });
       const claim = await db.run("UPDATE posts SET status='publishing', claimed_at=? WHERE id=? AND (status IN ('queued','scheduled','failed','partial') OR (status='publishing' AND claimed_at < ?))",
         now(), id, new Date(Date.now() - STALE_MS).toISOString());
       if (!claim.changes) throw httpError(409, 'This post is already being published');
@@ -449,8 +473,10 @@ const whenFrom = (body, slot) => {
       const p = await db.get('SELECT * FROM posts WHERE id=?', postId);
       const uid = p.user_id;
       const pending = await db.all("SELECT * FROM deliveries WHERE post_id=? AND status='pending'", postId);
+      const parts = J(p.parts, []);
+      const base = await settings.baseUrl(uid);
       let items = [], mediaError = null;
-      try { items = await media.resolve(uid, J(p.media, []), await settings.baseUrl(uid)); } catch (e) { mediaError = e.message; }
+      try { items = await media.resolve(uid, J(p.media, []), base); } catch (e) { mediaError = e.message; }
       const utm = await settings.get(uid, 'utm');
       // Accounts are published in parallel so a slow network doesn't hold up the others.
       await Promise.all(pending.map(async (d) => {
@@ -467,7 +493,22 @@ const whenFrom = (body, slot) => {
               const sub = (s) => String(s || '').replaceAll('{network}', acc.type);
               text = addUtm(text, { source: sub(utm.source), medium: sub(utm.medium), campaign: sub(utm.campaign) });
             }
-            const res = await prov.publish({ ...(await providerCtx(acc)), text, media: items });
+            const ctx = await providerCtx(acc);
+            const res = await prov.publish({ ...ctx, text, media: items });
+            // The rest of a thread: replies, comments or just the next post, per network.
+            if (parts.length && prov.thread && prov.thread !== 'none') {
+              let parent = res.ref ?? res.id;
+              const root = res.ref ?? res.id;
+              for (const part of parts) {
+                const partMedia = await media.resolve(uid, part.media || [], base);
+                const send = prov.thread === 'comment' && prov.comment ? prov.comment : prov.publish;
+                const r = await send({
+                  ...ctx, text: part.text, media: partMedia,
+                  ...(prov.thread !== 'sequential' && { replyTo: parent, threadRoot: root }),
+                });
+                parent = r?.ref ?? r?.id ?? parent;
+              }
+            }
             await db.run("UPDATE deliveries SET status='published', remote_id=?, remote_url=?, error=NULL, attempts=?, published_at=? WHERE id=?",
               res.id != null ? String(res.id) : null, res.url ?? null, attempts, now(), d.id);
             if (acc.status !== 'ok') await db.run("UPDATE accounts SET status='ok', last_error=NULL WHERE id=?", acc.id);

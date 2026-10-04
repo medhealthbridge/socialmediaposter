@@ -12,6 +12,7 @@ async function session(config) {
 export const provider = {
   id: 'bluesky', label: 'Bluesky', color: '#1185fe', limit: 300, length: graphemes,
   media: { max: 4, video: false, maxImageBytes: 1_000_000 },
+  thread: 'native',
   fields: [
     { key: 'handle', label: 'Handle or email', placeholder: 'you.bsky.social' },
     { key: 'password', label: 'App password (Settings → Privacy & security → App passwords)', secret: true },
@@ -27,10 +28,12 @@ export const provider = {
     } catch { /* profile is cosmetic */ }
     return { name, handle: `@${s.handle}`, avatar, external_id: s.did, profile_url: `https://bsky.app/profile/${s.handle}` };
   },
-  async publish({ config, text, media }) {
+  async publish({ config, text, media, replyTo, threadRoot }) {
     const s = await session(config);
     const headers = { authorization: `Bearer ${s.accessJwt}` };
     const record = { $type: 'app.bsky.feed.post', text, createdAt: new Date().toISOString(), facets: blueskyFacets(text) };
+    // A reply names both the post above it and the first post of the thread.
+    if (replyTo) record.reply = { root: threadRoot || replyTo, parent: replyTo };
     if (media.length) {
       const images = [];
       for (const m of media) {
@@ -41,7 +44,7 @@ export const provider = {
       record.embed = { $type: 'app.bsky.embed.images', images };
     }
     const { data } = await request(`${svcOf(config)}/xrpc/com.atproto.repo.createRecord`, { headers, json: { repo: s.did, collection: 'app.bsky.feed.post', record } });
-    return { id: data.uri, url: `https://bsky.app/profile/${s.handle}/post/${data.uri.split('/').pop()}` };
+    return { id: data.uri, url: `https://bsky.app/profile/${s.handle}/post/${data.uri.split('/').pop()}`, ref: { uri: data.uri, cid: data.cid } };
   },
   async metrics({ remoteId }) {
     const { data } = await request(`${endpoints.appview}/xrpc/app.bsky.feed.getPosts`, { query: { uris: remoteId } });

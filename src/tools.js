@@ -137,7 +137,7 @@ export function createToolRunner({ svc, analytics, canPublish = true }) {
           useSlot: !!args.use_next_free_time,
           overrides: Object.fromEntries(Object.entries(args.per_account_text || {}).map(([k, v]) => [Number(k), v])),
         }, { source: svc.actor === 'agent' ? 'agent' : 'assistant' });
-        const problems = await svc.problems(uid, { text: p.text, media: p.media, accountIds: p.deliveries.map((d) => d.account_id), overrides: p.overrides });
+        const problems = await svc.problems(uid, { text: p.text, media: p.media, parts: p.parts, accountIds: p.deliveries.map((d) => d.account_id), overrides: p.overrides });
         return { added: summarisePost(p), problems_if_published_now: problems };
       }
       case 'publish_post': {

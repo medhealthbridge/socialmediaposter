@@ -46,7 +46,12 @@ export const connector = {
 export const facebook = {
   id: 'facebook', label: 'Facebook Page', color: '#0866ff', limit: 63206,
   media: { max: 10, video: true, videoAlone: true },
+  thread: 'comment',
   connector: 'meta',
+  async comment({ config, app, text, replyTo }) {
+    const { data } = await request(`${endpoints.graph}/${v(app)}/${replyTo}/comments`, { form: { access_token: config.token, message: text } });
+    return { id: data.id, url: null, ref: replyTo };
+  },
   async publish({ config, app, text, media }) {
     const g = `${endpoints.graph}/${v(app)}`;
     const token = config.token;
@@ -55,14 +60,14 @@ export const facebook = {
       const fd = new FormData();
       fd.append('access_token', token); fd.append('description', text); fd.append('source', await video.blob(), video.filename);
       const { data } = await request(`${endpoints.video}/${v(app)}/${config.pageId}/videos`, { form: fd, timeout: 600_000 });
-      return { id: data.id, url: `https://www.facebook.com/${data.id}` };
+      return { id: data.id, url: `https://www.facebook.com/${data.id}`, ref: data.id };
     }
     if (media.length === 1) {
       const fd = new FormData();
       fd.append('access_token', token); fd.append('caption', text); fd.append('source', await media[0].blob(), media[0].filename);
       const { data } = await request(`${g}/${config.pageId}/photos`, { form: fd });
       const id = data.post_id || data.id;
-      return { id, url: `https://www.facebook.com/${id}` };
+      return { id, url: `https://www.facebook.com/${id}`, ref: id };
     }
     const form = { access_token: token, message: text };
     if (media.length > 1) {
@@ -77,7 +82,7 @@ export const facebook = {
       if (link) form.link = link;
     }
     const { data } = await request(`${g}/${config.pageId}/feed`, { form });
-    return { id: data.id, url: `https://www.facebook.com/${data.id}` };
+    return { id: data.id, url: `https://www.facebook.com/${data.id}`, ref: data.id };
   },
   async metrics({ config, app, remoteId }) {
     const { data } = await request(`${endpoints.graph}/${v(app)}/${remoteId}`, { query: { access_token: config.token, fields: 'reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0),shares' } });
@@ -96,7 +101,12 @@ export function publicUrlOf(m, network) {
 export const instagram = {
   id: 'instagram', label: 'Instagram', color: '#e1306c', limit: 2200,
   media: { max: 10, video: true, required: true, imageTypes: ['image/jpeg'] },
+  thread: 'comment',
   connector: 'meta',
+  async comment({ config, app, text, replyTo }) {
+    const { data } = await request(`${endpoints.graph}/${v(app)}/${replyTo}/comments`, { form: { access_token: config.token, message: text } });
+    return { id: data.id, url: null, ref: replyTo };
+  },
   validate(text) { if (hashtagCount(text) > 30) return 'Instagram allows at most 30 hashtags'; },
   async publish({ config, app, text, media }) {
     if (!media.length) throw new ProviderError('400 Instagram posts need at least one image or video', 400);
@@ -123,7 +133,7 @@ export const instagram = {
     const { data } = await request(`${g}/${config.igId}/media_publish`, { form: { access_token: token, creation_id: id } });
     let url = null;
     try { url = (await request(`${g}/${data.id}`, { query: { access_token: token, fields: 'permalink' } })).data.permalink; } catch { /* cosmetic */ }
-    return { id: data.id, url };
+    return { id: data.id, url, ref: data.id };
   },
   async metrics({ config, app, remoteId }) {
     const { data } = await request(`${endpoints.graph}/${v(app)}/${remoteId}`, { query: { access_token: config.token, fields: 'like_count,comments_count' } });
