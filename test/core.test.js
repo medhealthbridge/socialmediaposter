@@ -45,7 +45,7 @@ test('queue: posts wait in order until you click Post; Post next takes the first
   await assert.rejects(svc.publish(u1, c.id), /already published/);
   const p2 = await svc.publish(u1, b.id);
   assert.equal(p2.status, 'published');
-  assert.deepEqual(await svc.counts(u1), { queued: 1, failed: 0, published: 2 });
+  assert.deepEqual(await svc.counts(u1), { queued: 1, scheduled: 0, failed: 0, published: 2 });
 });
 
 test('Post now from the composer publishes immediately', async () => {
@@ -239,4 +239,75 @@ test('a read-only host with no Blob store still runs; uploads explain what to co
   } finally {
     if (prev === undefined) delete process.env.VERCEL; else process.env.VERCEL = prev;
   }
+});
+
+test('scheduling: posts go out when due, and only once', async () => {
+  const { svc, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  const soon = new Date(Date.now() + 3600e3);
+  const p = await svc.createPost(u1, { text: 'later', accountIds: [a.id], scheduledAt: soon.toISOString() });
+  assert.equal(p.status, 'scheduled');
+  assert.equal(p.scheduled_at, soon.toISOString());
+  assert.equal((await svc.counts(u1)).scheduled, 1);
+  assert.equal((await svc.runDue({ uid: u1 })).due, 0, 'not due yet');
+  const run = await svc.runDue({ uid: u1, now: new Date(Date.now() + 7200e3) });
+  assert.equal(run.due, 1);
+  assert.equal(run.results[0].status, 'published');
+  assert.equal((await svc.runDue({ uid: u1, now: new Date(Date.now() + 9000e3) })).due, 0, 'never twice');
+  assert.equal((await svc.getPost(u1, p.id)).status, 'published');
+});
+
+test('scheduling: a post that cannot publish is marked failed, the rest still go', async () => {
+  const { svc, u1 } = await setup();
+  const ok = await svc.addAccount(u1, { type: 'mock', name: 'ok' });
+  const bad = await svc.upsertOAuthAccount(u1, { type: 'mock', name: 'bad', external_id: 'b', config: { failWith: '400 nope' } });
+  const past = new Date(Date.now() - 60e3).toISOString();
+  await svc.createPost(u1, { text: 'one', accountIds: [bad.id], scheduledAt: past });
+  await svc.createPost(u1, { text: 'two', accountIds: [ok.id], scheduledAt: past });
+  const run = await svc.runDue({ uid: u1 });
+  assert.equal(run.due, 2);
+  assert.deepEqual(run.results.map((r) => r.status), ['failed', 'published']);
+});
+
+test('weekly posting times: next free slot, no double booking, timezone aware', async () => {
+  const { svc, auth, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  await assert.rejects(svc.createPost(u1, { text: 'x', accountIds: [a.id], useSlot: true }), /No posting times/);
+  await auth.setTz(u1, 'Asia/Manila');                       // UTC+8, no daylight saving
+  await svc.setSlots(u1, [0, 1, 2, 3, 4, 5, 6].map((dow) => ({ dow, time: '09:00' })));
+  const first = await svc.createPost(u1, { text: 'one', accountIds: [a.id], useSlot: true });
+  const second = await svc.createPost(u1, { text: 'two', accountIds: [a.id], useSlot: true });
+  assert.equal(first.status, 'scheduled');
+  assert.equal(new Date(second.scheduled_at) - new Date(first.scheduled_at), 864e5, 'the next day, not the same time');
+  assert.equal(new Date(first.scheduled_at).getUTCHours(), 1, '09:00 in Manila is 01:00 UTC');
+  await assert.rejects(svc.setSlots(u1, [{ dow: 9, time: '99:00' }]), /invalid/);
+  assert.equal((await svc.setSlots(u1, [{ dow: 1, time: '08:00' }, { dow: 1, time: '08:00' }])).length, 1, 'duplicates ignored');
+});
+
+test('evergreen posts queue their next copy after publishing, then stop', async () => {
+  const { svc, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  await svc.createPost(u1, { text: 'evergreen', accountIds: [a.id], scheduledAt: new Date(Date.now() - 1000).toISOString(), recycleDays: 7, recycleLeft: 1 });
+  await svc.runDue({ uid: u1 });
+  const next = await svc.listPosts(u1, { status: 'scheduled' });
+  assert.equal(next.length, 1);
+  assert.equal(next[0].source, 'evergreen');
+  assert.equal(next[0].recycle_left, 0);
+  assert.ok(new Date(next[0].scheduled_at) - Date.now() > 6.9 * 864e5);
+  await svc.runDue({ uid: u1, now: new Date(next[0].scheduled_at) });
+  assert.equal((await svc.listPosts(u1, { status: 'scheduled' })).length, 0, 'stops when the count runs out');
+});
+
+test('a scheduled post can be moved back to the queue and rescheduled', async () => {
+  const { svc, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  const p = await svc.createPost(u1, { text: 'x', accountIds: [a.id], scheduledAt: new Date(Date.now() + 864e5).toISOString() });
+  const back = await svc.updatePost(u1, p.id, { scheduledAt: null });
+  assert.equal(back.status, 'queued');
+  assert.equal(back.scheduled_at, null);
+  const again = await svc.updatePost(u1, p.id, { scheduledAt: new Date(Date.now() + 2 * 864e5).toISOString() });
+  assert.equal(again.status, 'scheduled');
+  const edited = await svc.updatePost(u1, p.id, { text: 'changed' });
+  assert.equal(edited.status, 'scheduled', 'editing the text keeps the schedule');
+  assert.equal(edited.scheduled_at, again.scheduled_at);
 });

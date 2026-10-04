@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +16,10 @@ import { publicProviders, publicConnectors } from './providers/index.js';
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.vercel-storage.com https://vercel.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const timingSafeEqualStr = (a, b) => {
+  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cookieOf = (req, name) => (req.headers.cookie || '').split(/;\s*/).map((c) => c.split('=')).find(([k]) => k === name)?.[1];
 const hostOf = (req) => req.headers['x-forwarded-host'] || req.headers.host;
@@ -48,6 +53,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
       user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
       mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
+      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid),
     };
   });
 
@@ -91,6 +97,11 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
   r('POST', '/api/media/register', ({ uid, body }) => svc.media.register(uid, body), { status: 201 });
   r('PATCH', '/api/media/:id', ({ uid, params, body }) => svc.media.setAlt(uid, id(params), body.alt));
   r('DELETE', '/api/media/:id', ({ uid, params }) => svc.media.remove(uid, id(params)));
+
+  r('GET', '/api/slots', async ({ uid }) => ({ slots: await svc.getSlots(uid), next: await svc.nextSlot(uid) }));
+  r('PUT', '/api/slots', async ({ uid, body }) => ({ slots: await svc.setSlots(uid, body.slots), next: await svc.nextSlot(uid) }));
+  r('GET', '/api/cron-url', async ({ uid }) => ({ url: `${await svc.settings.baseUrl(uid)}/api/cron?key=${await svc.settings.cronKey(uid)}` }));
+  r('POST', '/api/run-due', ({ uid }) => svc.runDue({ uid }));
 
   r('GET', '/api/snippets', ({ uid }) => svc.listSnippets(uid));
   r('POST', '/api/snippets', ({ uid, body }) => svc.saveSnippet(uid, body), { status: 201 });
@@ -170,6 +181,25 @@ export function createHandler(ctxOrFactory) {
       if (path.startsWith('/api/')) {
         if (req.method !== 'GET' && req.headers.origin && !sameHost(req)) throw httpError(403, 'cross-site request blocked');
         const me = await auth.userFromToken(token);
+
+        // Called by a timer (Vercel Cron, cron-job.org, …) to publish whatever is due.
+        if (path === '/api/cron') {
+          const given = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1] || url.searchParams.get('key');
+          const secret = process.env.CRON_SECRET;
+          // The install-wide secret covers every user; a personal key covers just that user.
+          const uids = secret && given && timingSafeEqualStr(given, secret)
+            ? (await ctx.db.all('SELECT id FROM users')).map((u) => u.id)
+            : [await svc.settings.ownerOfCronKey(given)].filter((x) => x != null);
+          if (!uids.length) return send(401, { error: 'invalid cron key' });
+          const out = [];
+          for (const id of uids) {
+            await svc.settings.set(id, 'lastCronAt', new Date().toISOString());
+            const published = await svc.runDue({ uid: id, limit: 50 });
+            const feeds = await ctx.feeds.checkDue(id).catch((e) => ({ error: e.message }));
+            out.push({ user: id, published, feeds });
+          }
+          return send(200, { ok: true, ran: out });
+        }
 
         if (path === '/api/auth/signup' || path === '/api/auth/login') {
           if (req.method !== 'POST') return send(405, { error: 'method not allowed' });

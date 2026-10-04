@@ -16,19 +16,21 @@ export function deliveriesHtml(p) {
 /** One post row. `index` is its 1-based place in the queue (queued posts only). */
 export function postItem(p, index) {
   const queued = p.status === 'queued';
+  const waiting = queued || p.status === 'scheduled';
   const retry = p.status === 'failed' || p.status === 'partial';
   const media = p.mediaItems.filter((m) => !m.missing);
   return `<div class="item" data-id="${p.id}">
     <div class="when">${queued && index ? `<div class="row nowrap"><span class="qnum">#${index}</span><div class="order"><button class="btn sm ghost icon" data-act="up" data-tip="Move up" aria-label="Move up">${icon('chevL', 'rot90')}</button><button class="btn sm ghost icon" data-act="down" data-tip="Move down" aria-label="Move down">${icon('chevR', 'rot90')}</button></div></div>`
+      : p.scheduled_at && p.status === 'scheduled' ? `${icon('clock')} ${fmt.dateTime(p.scheduled_at)}<div class="muted tiny">${fmt.rel(p.scheduled_at)}</div>`
       : p.posted_at ? `${fmt.dateTime(p.posted_at)}<div class="muted tiny">${fmt.rel(p.posted_at)}</div>` : `<span class="muted small">added ${fmt.rel(p.created_at)}</span>`}</div>
     <div style="min-width:0">
-      <div class="row" style="margin-bottom:6px">${statusBadge(p.status)}${p.source !== 'manual' ? `<span class="badge nodot">${esc({ rss: 'from RSS', bulk: 'imported' }[p.source] || p.source)}</span>` : ''}${p.notes ? `<span class="badge nodot" data-tip="${esc(p.notes)}">note</span>` : ''}</div>
+      <div class="row" style="margin-bottom:6px">${statusBadge(p.status)}${p.source !== 'manual' ? `<span class="badge nodot">${esc({ rss: 'from RSS', bulk: 'imported', assistant: 'from assistant', evergreen: 'evergreen' }[p.source] || p.source)}</span>` : ''}${p.recycle_days ? `<span class="badge nodot" data-tip="Reposts every ${p.recycle_days} days">${icon('recycle')} every ${p.recycle_days}d</span>` : ''}${p.notes ? `<span class="badge nodot" data-tip="${esc(p.notes)}">note</span>` : ''}</div>
       <div class="txt">${esc(p.text) || '<span class="muted">(media only)</span>'}</div>
       ${media.length ? `<div class="media-mini">${media.slice(0, 6).map((m) => (m.mime.startsWith('video/') ? `<video src="${esc(m.url)}" muted preload="metadata"></video>` : `<img src="${esc(m.url)}" alt="" loading="lazy">`)).join('')}</div>` : ''}
       ${deliveriesHtml(p)}
     </div>
     <div class="actions" style="align-items:center">
-      ${queued || retry ? `<button class="btn sm primary post-btn" data-act="post">${icon(retry ? 'retry' : 'send')} ${retry ? 'Retry' : 'Post'}</button>` : ''}
+      ${waiting || retry ? `<button class="btn sm primary post-btn" data-act="post">${icon(retry ? 'retry' : 'send')} ${retry ? 'Retry' : p.status === 'scheduled' ? 'Post now' : 'Post'}</button>` : ''}
       ${p.status === 'published' || p.status === 'publishing' ? '' : `<button class="btn sm ghost icon" data-act="edit" data-tip="Edit">${icon('edit')}</button>`}
       <button class="btn sm ghost icon" data-act="dup" data-tip="${p.status === 'published' ? 'Post again (copy to queue)' : 'Duplicate'}">${icon('copy')}</button>
       <button class="btn sm ghost icon danger" data-act="del" data-tip="Delete">${icon('trash')}</button>

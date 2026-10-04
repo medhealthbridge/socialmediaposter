@@ -1,7 +1,7 @@
 import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, busy, confirmBox, copyBox, avatar } from '../core.js';
 import { appSetup } from './accounts.js';
 
-const SECTIONS = [['general', 'General'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['assistant', 'Assistant access'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
+const SECTIONS = [['general', 'General'], ['schedule', 'Scheduling'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['assistant', 'Assistant access'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export async function render(root, qs) {
@@ -32,6 +32,53 @@ export async function render(root, qs) {
         $('#savePub').onclick = busy($('#savePub'), async () => { await save({ publicUrl: $('#pub').value }); draw(); });
       }];
     },
+    async schedule() {
+      const { slots, next } = await api('/slots');
+      const { url } = await api('/cron-url');
+      const st = state.settings;
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      return [`<div class="card card-pad form" style="max-width:none"><h2>Automatic publishing</h2>
+        <p class="text-2">This app has no clock of its own, so a free timer service calls it for you. Paste the address below into one, set it to every 15 minutes, and scheduled posts go out on their own.</p>
+        <label class="field">Your private timer address${copyBox(url)}</label>
+        <div class="callout ${st.autoPublish ? '' : 'warn'}">${icon(st.autoPublish ? 'check' : 'alert')}<div>
+          ${st.autoPublish ? `<b>Working.</b> Last automatic run ${esc(fmt.rel(st.lastCronAt))}.` : `<b>Not set up yet.</b> Scheduled posts will wait until you publish them by hand.`}
+          <div class="small" style="margin-top:6px">Free options: <a href="https://cron-job.org" target="_blank" rel="noopener">cron-job.org</a> (easiest) · <a href="https://console.cron-job.org" target="_blank" rel="noopener">UptimeRobot</a> · Vercel Cron (add <code>CRON_SECRET</code> in Vercel, see the README).</div></div></div>
+        <div class="row"><button class="btn" id="runNow">${icon('play')} Run now</button><span class="hint">Publishes anything that is already due, so you can check it works.</span></div>
+      </div>
+
+      <div class="card card-pad form" style="max-width:none"><h2>Weekly posting times</h2>
+        <p class="text-2">Pick the times you like to post. Then “Next free time” in the composer drops a post into the next empty one (${esc(state.user.tz)}). Tip: Analytics shows when your posts do best.</p>
+        <div class="slot-grid" id="slots"></div>
+        <div class="row"><div class="row" id="dsel">${days.map((d, i) => `<button type="button" class="chip plain" data-d="${i}">${d}</button>`).join('')}</div>
+          <input type="time" id="time" value="09:00" style="width:130px"><button class="btn primary" id="addSlot">${icon('plus')} Add time</button></div>
+        <div class="row"><button class="btn sm ghost" id="preset">Use a starter schedule (weekdays 9:00, 12:30, 17:30)</button><span class="right muted small" id="nextSlot"></span></div>
+      </div>`, () => {
+        let current = slots.slice();
+        const drawSlots = (nextAt) => {
+          $('#slots').innerHTML = days.map((d, i) => `<div class="slot-row"><b class="small">${d}</b><div class="row">${current.filter((x) => x.dow === i).sort((a, b) => a.time.localeCompare(b.time)).map((x) => `<span class="slot">${x.time}<button data-del="${i}|${x.time}" aria-label="Remove">${icon('x')}</button></span>`).join('') || '<span class="muted small">—</span>'}</div></div>`).join('');
+          $('#nextSlot').textContent = nextAt ? `Next free time: ${fmt.dateTime(nextAt)}` : '';
+        };
+        const put = async (nextSlots) => {
+          const r = await api('/slots', { method: 'PUT', body: { slots: nextSlots } });
+          current = r.slots; state.slots = r.slots; state.nextSlot = r.next; drawSlots(r.next);
+        };
+        drawSlots(next);
+        $('#dsel').onclick = (e) => e.target.closest('.chip')?.classList.toggle('on');
+        $('#slots').onclick = (e) => { const b = e.target.closest('[data-del]'); if (b) put(current.filter((x) => `${x.dow}|${x.time}` !== b.dataset.del)); };
+        $('#addSlot').onclick = () => {
+          const ds = $$('#dsel .on').map((c) => Number(c.dataset.d)); const t = $('#time').value;
+          if (!ds.length || !t) return toast('Pick at least one day and a time');
+          put([...current, ...ds.map((dow) => ({ dow, time: t }))]);
+          $$('#dsel .on').forEach((c) => c.classList.remove('on'));
+        };
+        $('#preset').onclick = () => put([1, 2, 3, 4, 5].flatMap((dow) => ['09:00', '12:30', '17:30'].map((time) => ({ dow, time }))));
+        $('#runNow').onclick = busy($('#runNow'), async () => {
+          const r = await api('/run-due', { method: 'POST' });
+          toast(r.due ? `Published ${r.due} due post${r.due > 1 ? 's' : ''}` : 'Nothing was due', 'ok');
+        });
+      }];
+    },
+
     integrations() {
       const apps = Object.values(state.connectors).filter((c) => c.app);
       return [`<div class="card card-pad form" style="max-width:none"><h2>Developer apps</h2>

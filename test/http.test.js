@@ -206,3 +206,48 @@ test('MCP endpoint: tools need a valid key, then drive the queue end to end', as
   assert.match(theirs.json.result.content[0].text, /"count": 0/);
   srv.closeAllConnections(); srv.close();
 });
+
+test('cron endpoint publishes due posts for its own user only', async () => {
+  const { srv, call } = await boot();
+  const { cookie: c } = await call('/api/auth/signup', { method: 'POST', body: { email: 'me@x.io', password: 'longenough' } });
+  const acc = (await call('/api/accounts', { method: 'POST', cookie: c, body: { type: 'mock' } })).json;
+  const past = new Date(Date.now() - 60e3).toISOString();
+  await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'due now', accountIds: [acc.id], scheduledAt: past } });
+  assert.equal((await call('/api/counts', { cookie: c })).json.scheduled, 1);
+
+  assert.equal((await call('/api/cron')).status, 401, 'no key');
+  assert.equal((await call('/api/cron?key=cr_notarealkey0000000')).status, 401, 'wrong key');
+
+  const { url } = (await call('/api/cron-url', { cookie: c })).json;
+  assert.match(url, /\/api\/cron\?key=cr_/);
+  const key = url.split('key=')[1];
+  // A timer service hits it with a plain GET.
+  const ran = await call(`/api/cron?key=${key}`);
+  assert.equal(ran.status, 200);
+  assert.equal(ran.json.ran[0].published.due, 1);
+  assert.equal((await call('/api/counts', { cookie: c })).json.published, 1);
+  assert.equal((await call(`/api/cron?key=${key}`)).json.ran[0].published.due, 0, 'nothing left to do');
+
+  // Another user's posts are untouched by that key.
+  await call('/api/users', { method: 'POST', cookie: c, body: { email: 'friend@x.io', password: 'friendpass1' } });
+  const friend = await call('/api/auth/login', { method: 'POST', body: { email: 'friend@x.io', password: 'friendpass1' } });
+  const facc = (await call('/api/accounts', { method: 'POST', cookie: friend.cookie, body: { type: 'mock' } })).json;
+  await call('/api/posts', { method: 'POST', cookie: friend.cookie, body: { text: 'theirs', accountIds: [facc.id], scheduledAt: past } });
+  await call(`/api/cron?key=${key}`);
+  assert.equal((await call('/api/counts', { cookie: friend.cookie })).json.scheduled, 1, 'still waiting');
+  srv.closeAllConnections(); srv.close();
+});
+
+test('CRON_SECRET runs every user, as Vercel Cron does', async () => {
+  process.env.CRON_SECRET = 'top-secret-value';
+  const { srv, call } = await boot();
+  const { cookie: c } = await call('/api/auth/signup', { method: 'POST', body: { email: 'me@x.io', password: 'longenough' } });
+  const acc = (await call('/api/accounts', { method: 'POST', cookie: c, body: { type: 'mock' } })).json;
+  await call('/api/posts', { method: 'POST', cookie: c, body: { text: 'due', accountIds: [acc.id], scheduledAt: new Date(Date.now() - 1000).toISOString() } });
+  const ran = await call('/api/cron', { headers: { authorization: 'Bearer top-secret-value' } });
+  assert.equal(ran.status, 200);
+  assert.equal(ran.json.ran[0].published.due, 1);
+  assert.equal((await call('/api/cron', { headers: { authorization: 'Bearer wrong' } })).status, 401);
+  delete process.env.CRON_SECRET;
+  srv.closeAllConnections(); srv.close();
+});

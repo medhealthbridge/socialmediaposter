@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { connectors } from './providers/index.js';
 import { AI_PROVIDERS } from './ai.js';
 import { httpError } from './errors.js';
@@ -25,6 +26,23 @@ export function createSettings(db, vault) {
         set: async (k, v) => { const all = await s.get(uid, key, {}); all[k] = v; await s.set(uid, key, all); },
       };
     },
+    /** A stable secret for this user's cron URL, made on first use. */
+    async cronKey(uid) {
+      let key = await s.get(uid, 'cronKey');
+      if (!key) { key = `cr_${randomBytes(18).toString('base64url')}`; await s.set(uid, 'cronKey', key); }
+      return key;
+    },
+
+    /** Which user a cron key belongs to, or null. */
+    async ownerOfCronKey(key) {
+      if (!key || !/^cr_[\w-]{10,}$/.test(key)) return null;
+      for (const u of await db.all('SELECT id FROM users')) {
+        const mine = await s.get(u.id, 'cronKey');
+        if (mine && mine.length === key.length && timingSafeEqual(Buffer.from(mine), Buffer.from(key))) return u.id;
+      }
+      return null;
+    },
+
     async view(uid) {
       const apps = await s.get(uid, 'apps', {});
       const ai = await s.get(uid, 'ai', {});
@@ -37,8 +55,12 @@ export function createSettings(db, vault) {
         appsView[c.id].configured = c.app.fields.every((f) => f.optional || cur[f.key]);
         appsView[c.id].redirectUri = `${base}/oauth/callback/${c.id}`;
       }
+      const lastCronAt = await s.get(uid, 'lastCronAt');
       return {
         publicUrl: (await s.get(uid, 'publicUrl')) || '',
+        lastCronAt,
+        // "Working" means a timer actually called us recently — not just that it was set up.
+        autoPublish: !!lastCronAt && Date.now() - new Date(lastCronAt).getTime() < 3 * 3600e3,
         effectiveUrl: base,
         alertsAccountId: await s.get(uid, 'alertsAccountId'),
         utm: await s.get(uid, 'utm', { enabled: false, source: '{network}', medium: 'social', campaign: '' }),

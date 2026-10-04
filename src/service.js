@@ -10,6 +10,7 @@ import { createVault, loadKey } from './vault.js';
 import { createSettings } from './settings.js';
 import { createMedia } from './media.js';
 import { httpError } from './errors.js';
+import { nextFreeSlot } from './tz.js';
 import { inList } from './db.js';
 
 export { httpError };
@@ -77,7 +78,21 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     accountIds: b.accountIds === undefined ? undefined : ints(b.accountIds),
     overrides: b.overrides === undefined ? undefined : Object.fromEntries(Object.entries(b.overrides || {}).filter(([, v]) => typeof v === 'string' && v.trim()).map(([k, v]) => [Number(k), v.replace(/\r\n/g, '\n')])),
     notes: typeof b.notes === 'string' ? b.notes.slice(0, 5000) : undefined,
+    recycleDays: b.recycleDays === undefined ? undefined : (Number(b.recycleDays) > 0 ? Math.min(365, Math.floor(Number(b.recycleDays))) : null),
+    recycleLeft: b.recycleLeft === undefined ? undefined : (b.recycleLeft === null || b.recycleLeft === '' ? null : Math.max(0, Math.floor(Number(b.recycleLeft)))),
   });
+
+/** Work out when a post should go out: a date, the next free weekly slot, or nothing (queue). */
+const whenFrom = (body, slot) => {
+  if (body.publishNow) return null;
+  if (body.useSlot) return slot;
+  if (body.scheduledAt) {
+    const d = new Date(body.scheduledAt);
+    if (Number.isNaN(d.getTime())) throw httpError(400, 'invalid date');
+    return d;
+  }
+  return null;
+};
 
   const svc = {
     db, vault, settings, media, tzOf, providerCtx,
@@ -186,7 +201,9 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
       if (status === 'failed') sql += " AND status IN ('failed','partial')";
       else if (status) { sql += ' AND status = ?'; args.push(status); }
       if (search) { sql += ' AND LOWER(text) LIKE ?'; args.push(`%${String(search).toLowerCase()}%`); }
-      sql += status === 'queued' ? ' ORDER BY position, id' : ' ORDER BY COALESCE(posted_at, created_at) DESC, id DESC';
+      if (status === 'queued') sql += ' ORDER BY position, id';
+      else if (status === 'scheduled') sql += ' ORDER BY scheduled_at, id';
+      else sql += ' ORDER BY COALESCE(posted_at, scheduled_at, created_at) DESC, id DESC';
       sql += ' LIMIT ?'; args.push(Math.min(Number(limit) || 500, 10000));
       return hydrate(uid, await db.all(sql, ...args));
     },
@@ -200,7 +217,7 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     async counts(uid) {
       const rows = await db.all('SELECT status, COUNT(*) AS n FROM posts WHERE user_id=? GROUP BY status', uid);
       const c = Object.fromEntries(rows.map((r) => [r.status, Number(r.n)]));
-      return { queued: c.queued || 0, failed: (c.failed || 0) + (c.partial || 0), published: c.published || 0 };
+      return { queued: c.queued || 0, scheduled: c.scheduled || 0, failed: (c.failed || 0) + (c.partial || 0), published: c.published || 0 };
     },
 
     /** Human-readable problems for publishing this content to these accounts. */
@@ -240,10 +257,11 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
       if (errs.length) throw Object.assign(httpError(400, errs.join(' · ')), { problems: errs });
     },
 
-    async insertPost(uid, c, { source = 'manual', status = 'queued' } = {}) {
+    async insertPost(uid, c, { source = 'manual', when = null } = {}) {
       const pos = (await db.get("SELECT COALESCE(MAX(position), 0) AS m FROM posts WHERE user_id=? AND status='queued'", uid)).m + 1;
-      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source) VALUES (?,?,?,?,?,?,?)',
-        uid, c.text, JSON.stringify(c.media), status, pos, c.notes ?? '', source);
+      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source,scheduled_at,recycle_days,recycle_left) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        uid, c.text, JSON.stringify(c.media), when ? 'scheduled' : 'queued', pos, c.notes ?? '', source,
+        when ? when.toISOString() : null, c.recycleDays ?? null, c.recycleLeft ?? null);
       for (const aid of c.accountIds) await db.run('INSERT INTO deliveries(post_id,account_id,text_override) VALUES (?,?,?)', id, aid, c.overrides?.[aid] ?? null);
       return id;
     },
@@ -251,11 +269,14 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     /** Add a post to the queue; with publishNow it is published right away. */
     async createPost(uid, body, { source } = {}) {
       const n = normalize(body);
-      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes };
+      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, recycleDays: n.recycleDays, recycleLeft: n.recycleLeft };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
-      if (body.publishNow) await svc.validate(uid, c);
-      const id = await svc.insertPost(uid, c, { source });
+      if (body.useSlot && !(await svc.getSlots(uid)).length) throw httpError(400, 'No posting times set yet — add some in Settings → Scheduling');
+      const when = whenFrom(body, await svc.nextSlot(uid));
+      if (body.useSlot && !when) throw httpError(400, 'No free posting time in the next two months — add more times');
+      if (body.publishNow || when) await svc.validate(uid, c);
+      const id = await svc.insertPost(uid, c, { source, when });
       return body.publishNow ? svc.publish(uid, id) : svc.getPost(uid, id);
     },
 
@@ -266,10 +287,21 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
       const c = {
         text: n.text ?? p.text, media: n.media ?? p.media, notes: n.notes ?? p.notes,
         accountIds: n.accountIds ?? p.deliveries.map((d) => d.account_id), overrides: n.overrides ?? p.overrides,
+        recycleDays: n.recycleDays !== undefined ? n.recycleDays : p.recycle_days,
+        recycleLeft: n.recycleLeft !== undefined ? n.recycleLeft : p.recycle_left,
       };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
-      await db.run('UPDATE posts SET text=?, media=?, notes=? WHERE id=?', c.text, JSON.stringify(c.media), c.notes ?? '', id);
+      // 'scheduledAt: null' moves it back to the queue; leaving it out keeps the current time.
+      const reschedule = body.publishNow ? null
+        : body.useSlot ? await svc.nextSlot(uid)
+        : body.scheduledAt !== undefined ? whenFrom(body, null)
+        : p.scheduled_at ? new Date(p.scheduled_at) : null;
+      if (reschedule) await svc.validate(uid, { ...c, accountIds: c.accountIds });
+      await db.run('UPDATE posts SET text=?, media=?, notes=?, scheduled_at=?, status=?, recycle_days=?, recycle_left=? WHERE id=?',
+        c.text, JSON.stringify(c.media), c.notes ?? '', reschedule ? reschedule.toISOString() : null,
+        reschedule ? 'scheduled' : p.status === 'scheduled' ? 'queued' : p.status,
+        c.recycleDays ?? null, c.recycleLeft ?? null, id);
       for (const d of p.deliveries) {
         if (d.status !== 'published' && !c.accountIds.includes(d.account_id)) await db.run('DELETE FROM deliveries WHERE id=?', d.id);
       }
@@ -312,7 +344,7 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
       if (p.status === 'published') throw httpError(409, 'already published');
       const todo = p.deliveries.filter((d) => d.status !== 'published');
       await svc.validate(uid, { text: p.text, media: p.media, accountIds: todo.map((d) => d.account_id), overrides: p.overrides });
-      const claim = await db.run("UPDATE posts SET status='publishing', claimed_at=? WHERE id=? AND (status IN ('queued','failed','partial') OR (status='publishing' AND claimed_at < ?))",
+      const claim = await db.run("UPDATE posts SET status='publishing', claimed_at=? WHERE id=? AND (status IN ('queued','scheduled','failed','partial') OR (status='publishing' AND claimed_at < ?))",
         now(), id, new Date(Date.now() - STALE_MS).toISOString());
       if (!claim.changes) throw httpError(409, 'This post is already being published');
       await db.run("UPDATE deliveries SET status='pending', error=NULL WHERE post_id=? AND status='failed'", id);
@@ -321,6 +353,66 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
         await db.run("UPDATE posts SET status='failed' WHERE id=? AND status='publishing'", id);
       }
       return svc.getPost(uid, id);
+    },
+
+    // ---------------- weekly posting times
+    getSlots: (uid) => db.all('SELECT dow, time FROM slots WHERE user_id=? ORDER BY dow, time', uid),
+
+    async setSlots(uid, slots) {
+      if (!Array.isArray(slots) || slots.length > 200) throw httpError(400, 'invalid posting times');
+      for (const s of slots) {
+        if (!(Number.isInteger(s.dow) && s.dow >= 0 && s.dow <= 6 && /^([01]\d|2[0-3]):[0-5]\d$/.test(s.time))) throw httpError(400, 'invalid posting time');
+      }
+      await db.run('DELETE FROM slots WHERE user_id=?', uid);
+      const seen = new Set();
+      for (const s of slots) {
+        const key = `${s.dow}|${s.time}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        await db.run('INSERT INTO slots(user_id,dow,time) VALUES (?,?,?)', uid, s.dow, s.time);
+      }
+      return svc.getSlots(uid);
+    },
+
+    /** The next weekly time that has nothing scheduled on it yet. */
+    async nextSlot(uid, from = new Date()) {
+      const slots = await svc.getSlots(uid);
+      if (!slots.length) return null;
+      const taken = new Set((await db.all("SELECT scheduled_at FROM posts WHERE user_id=? AND status='scheduled'", uid)).map((r) => r.scheduled_at));
+      return nextFreeSlot(slots, await tzOf(uid), taken, from);
+    },
+
+    // ---------------- publishing on a schedule (driven by /api/cron)
+    /** Publish everything that is due. Pass a user id to limit it to one person. */
+    async runDue({ uid = null, now = new Date(), limit = 25 } = {}) {
+      const due = await db.all(
+        `SELECT id, user_id FROM posts WHERE status='scheduled' AND scheduled_at <= ? ${uid ? 'AND user_id = ?' : ''} ORDER BY scheduled_at LIMIT ?`,
+        ...[now.toISOString(), ...(uid ? [uid] : []), limit]);
+      const results = [];
+      for (const row of due) {
+        try {
+          const p = await svc.publish(row.user_id, row.id);
+          results.push({ id: p.id, status: p.status });
+          if (p.status !== 'failed') await svc.recycle(row.user_id, p, now);
+        } catch (e) {
+          // Keep going: one bad post must not stop the rest.
+          await db.run("UPDATE posts SET status='failed' WHERE id=? AND status IN ('scheduled','publishing')", row.id);
+          results.push({ id: row.id, status: 'failed', error: e.message });
+        }
+      }
+      return { due: due.length, results };
+    },
+
+    /** Evergreen: queue the next copy of a repeating post. */
+    async recycle(uid, p, now = new Date()) {
+      if (!(p.recycle_days > 0) || (p.recycle_left !== null && p.recycle_left <= 0)) return null;
+      const when = new Date(now.getTime() + p.recycle_days * 864e5);
+      const id = await svc.insertPost(uid, {
+        text: p.text, media: p.media, accountIds: p.deliveries.map((d) => d.account_id),
+        overrides: p.overrides, notes: p.notes,
+        recycleDays: p.recycle_days, recycleLeft: p.recycle_left === null ? null : p.recycle_left - 1,
+      }, { source: 'evergreen', when });
+      return id;
     },
 
     async publishNext(uid) {

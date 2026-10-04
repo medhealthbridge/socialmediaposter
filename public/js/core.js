@@ -4,7 +4,7 @@ export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** App-wide state loaded from /api/bootstrap. */
-export const state = { user: null, providers: {}, connectors: {}, accounts: [], settings: {}, snippets: [], aiProviders: {}, counts: { queued: 0, failed: 0, published: 0 }, storage: 'disk' };
+export const state = { user: null, providers: {}, connectors: {}, accounts: [], settings: {}, snippets: [], aiProviders: {}, counts: { queued: 0, scheduled: 0, failed: 0, published: 0 }, storage: 'disk', slots: [], nextSlot: null };
 
 export class ApiError extends Error {
   constructor(message, status, data) { super(message); this.status = status; this.data = data; }
@@ -161,7 +161,7 @@ export function avatar(acc, size = '') {
 export const accountById = (id) => state.accounts.find((a) => a.id === Number(id));
 
 export function statusBadge(s) {
-  const label = { queued: 'In queue', draft: 'Draft', scheduled: 'Scheduled', publishing: 'Publishing…', published: 'Published', partial: 'Partly failed', failed: 'Failed', pending: 'Pending', ok: 'Connected', reauth: 'Reconnect needed', error: 'Error' }[s] || s;
+  const label = { queued: 'In queue', scheduled: 'Scheduled', draft: 'Draft', scheduled: 'Scheduled', publishing: 'Publishing…', published: 'Published', partial: 'Partly failed', failed: 'Failed', pending: 'Pending', ok: 'Connected', reauth: 'Reconnect needed', error: 'Error' }[s] || s;
   return `<span class="badge ${s}">${label}</span>`;
 }
 

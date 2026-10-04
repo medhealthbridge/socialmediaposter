@@ -28,7 +28,8 @@ const schema = (pg) => {
   CREATE TABLE IF NOT EXISTS posts (
     id ${id}, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, media TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'queued', position INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT 'manual', claimed_at TEXT, posted_at TEXT, created_at TEXT NOT NULL DEFAULT ${now});
+    source TEXT NOT NULL DEFAULT 'manual', claimed_at TEXT, posted_at TEXT, scheduled_at TEXT,
+    recycle_days INTEGER, recycle_left INTEGER, created_at TEXT NOT NULL DEFAULT ${now});
   CREATE TABLE IF NOT EXISTS deliveries (
     id ${id}, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending',
@@ -38,6 +39,8 @@ const schema = (pg) => {
     id ${id}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT NOT NULL UNIQUE,
     filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, alt TEXT NOT NULL DEFAULT '', url TEXT,
     created_at TEXT NOT NULL DEFAULT ${now});
+  CREATE TABLE IF NOT EXISTS slots (
+    id ${id}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, dow INTEGER NOT NULL, time TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS snippets (
     id ${id}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, body TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS feeds (
@@ -51,6 +54,7 @@ const schema = (pg) => {
     verifier TEXT NOT NULL, redirect_uri TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT ${now});
   CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_name ON accounts(user_id, name);
   CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_posts_due ON posts(status, scheduled_at);
   CREATE INDEX IF NOT EXISTS idx_deliveries_post ON deliveries(post_id);
   CREATE INDEX IF NOT EXISTS idx_deliveries_account ON deliveries(account_id, status);`;
 };
@@ -66,14 +70,14 @@ async function openSqlite(path) {
   const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
   if (cols('posts').size) {
     const add = { accounts: { user_id: 'INTEGER', handle: 'TEXT', avatar: 'TEXT', external_id: 'TEXT', profile_url: 'TEXT', status: "TEXT NOT NULL DEFAULT 'ok'", last_error: 'TEXT' },
-      posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''", source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT' },
+      posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''", source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT', recycle_days: 'INTEGER', recycle_left: 'INTEGER' },
       deliveries: { text_override: 'TEXT', remote_id: 'TEXT', metrics: 'TEXT', metrics_at: 'TEXT' }, media: { url: 'TEXT' } };
     for (const [t, defs] of Object.entries(add)) {
       const have = cols(t);
       if (!have.size) continue;
       for (const [c, type] of Object.entries(defs)) if (!have.has(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
     }
-    db.exec("UPDATE posts SET status='queued', position=id WHERE status IN ('draft','scheduled')");
+    db.exec("UPDATE posts SET status='queued', position=id WHERE status='draft'");
     db.exec(`UPDATE posts SET posted_at=COALESCE(posted_at, ${cols('posts').has('scheduled_at') ? 'scheduled_at, ' : ''}created_at) WHERE status IN ('published','partial','failed') AND posted_at IS NULL`);
     if (cols('feeds').size) db.exec("UPDATE feeds SET mode='queue' WHERE mode='draft'");
   }

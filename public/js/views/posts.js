@@ -1,7 +1,7 @@
 import { $, api, state, esc, icon, toast, modal, debounce, refreshCounts, busy } from '../core.js';
 import { postItem, postAction, publishToast } from './postcard.js';
 
-const TABS = [['queued', 'Queue'], ['published', 'Published'], ['failed', 'Needs attention'], ['all', 'All']];
+const TABS = [['queued', 'Queue'], ['scheduled', 'Scheduled'], ['published', 'Published'], ['failed', 'Needs attention'], ['all', 'All']];
 
 export async function render(root, qs) {
   let tab = TABS.some(([k]) => k === qs.get('tab')) ? qs.get('tab') : 'queued';
@@ -29,10 +29,14 @@ export async function render(root, qs) {
         <button class="btn primary" id="postNext">${icon('send')} Post next</button></div>` : '';
     $('#postNext', root)?.addEventListener('click', (e) => busy(e.currentTarget, async () => { publishToast(await api('/queue/next', { method: 'POST' })); await refreshCounts(); await draw(); })());
     $('#tabs', root).innerHTML = TABS.map(([k, l]) => {
-      const n = k === 'queued' ? counts.queued : k === 'failed' ? counts.failed : k === 'published' ? counts.published : null;
+      const n = counts[k] ?? null;
       return `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${l}${n ? `<span class="n">${n}</span>` : ''}</button>`;
     }).join('');
-    const empty = { queued: ['Your queue is empty', 'Write a few posts now, then publish them with one click whenever you like.'], published: ['Nothing published yet', ''], failed: ['All good', 'No failed posts.'], all: ['No posts yet', ''] }[tab];
+    const empty = {
+      queued: ['Your queue is empty', 'Write a few posts now, then publish them with one click whenever you like.'],
+      scheduled: ['Nothing scheduled', 'Pick a date in the composer to have a post go out on its own.'],
+      published: ['Nothing published yet', ''], failed: ['All good', 'No failed posts.'], all: ['No posts yet', ''],
+    }[tab];
     $('#list', root).innerHTML = posts.length ? posts.map((p, i) => postItem(p, tab === 'queued' && !search ? i + 1 : 0)).join('')
       : `<div class="empty">${icon(tab === 'failed' ? 'check' : 'queue')}<b>${empty[0]}</b><span>${search ? 'Try a different search.' : empty[1]}</span>${tab !== 'failed' ? `<a class="btn primary" href="#/compose">${icon('plus')} Create post</a>` : ''}</div>`;
   }
