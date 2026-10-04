@@ -86,10 +86,12 @@ export function createFeeds(svc) {
           try { await svc.createPost(f.user_id, { text, accountIds, publishNow: f.mode === 'now' }, { source: 'rss' }); }
           catch (e) { await svc.createPost(f.user_id, { text, accountIds, notes: `From RSS — could not post automatically: ${e.message}` }, { source: 'rss' }); }
           created++;
+          await svc.events.add(f.user_id, 'rss', `New item from ${f.title || f.url}: ${it.title}`.slice(0, 200), { actor: 'rss', detail: { link: it.link, mode: f.mode } });
         }
         return created;
       } catch (e) {
         await db.run('UPDATE feeds SET last_checked=?, last_error=? WHERE id=?', new Date().toISOString(), String(e.message).slice(0, 300), f.id);
+        await svc.events.add(f.user_id, 'rss', `Could not read ${f.title || f.url}: ${e.message}`, { actor: 'rss', level: 'warn' });
         return 0;
       }
     },

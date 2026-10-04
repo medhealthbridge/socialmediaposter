@@ -433,3 +433,122 @@ test('Pinterest: one account per board, pin posted as base64 with a link', async
   assert.equal(post.deliveries[0].remote_url, 'https://www.pinterest.com/pin/PIN1/');
   await fake.close();
 });
+
+test('agent: Gemini decides, calls the app’s tools, and reports back', async () => {
+  const turns = [];
+  const fake = await fakeServer({
+    'POST /v1beta/models/m:generateContent': (c) => {
+      turns.push(c.json);
+      const n = turns.length;
+      if (n === 1) return { candidates: [{ content: { parts: [{ functionCall: { name: 'list_accounts', args: {} } }] } }] };
+      if (n === 2) return { candidates: [{ content: { parts: [{ functionCall: { name: 'add_to_queue', args: { text: 'Fresh bread today', account_ids: [1] } } }] } }] };
+      return { candidates: [{ content: { parts: [{ text: 'Added one post about fresh bread to your queue.' }] } }] };
+    },
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, agent, events, u1 } = await setup();
+  await svc.addAccount(u1, { type: 'mock', name: 'Bakery' });
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza', model: 'm' } });
+
+  const r = await agent.chat(u1, { message: 'write a post about fresh bread and queue it' });
+  assert.match(r.reply, /Added one post/);
+  assert.deepEqual(r.used.map((u) => u.name), ['list_accounts', 'add_to_queue']);
+  assert.equal(r.used.every((u) => u.ok), true);
+
+  const queued = await svc.listPosts(u1, { status: 'queued' });
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].text, 'Fresh bread today');
+  assert.equal(queued[0].source, 'agent');
+
+  // the tools it was offered, and the shape Gemini expects
+  const decl = turns[0].tools[0].functionDeclarations;
+  assert.ok(decl.find((d) => d.name === 'publish_post'));
+  assert.equal(decl.find((d) => d.name === 'add_to_queue').parameters.type, 'OBJECT');
+  assert.equal(decl.find((d) => d.name === 'add_to_queue').parameters.properties.account_ids.type, 'ARRAY');
+  assert.equal(JSON.stringify(decl).includes('additionalProperties'), false, 'Gemini rejects additionalProperties');
+  assert.equal(decl.find((d) => d.name === 'list_accounts').parameters, undefined, 'no empty parameter object');
+  assert.equal(turns[1].contents.at(-1).parts[0].functionResponse.name, 'list_accounts');
+
+  const log = await events.list(u1, { kind: 'agent' });
+  assert.ok(log.some((e) => /Agent used add_to_queue/.test(e.summary)));
+  assert.ok(log.every((e) => e.actor === 'agent'));
+  await fake.close();
+});
+
+test('agent: publishing is off until you allow it, and tool errors are reported not thrown', async () => {
+  let turn = 0;
+  const fake = await fakeServer({
+    'POST /v1beta/models/m:generateContent': () => {
+      turn++;
+      if (turn % 2 === 1) return { candidates: [{ content: { parts: [{ functionCall: { name: 'publish_post', args: { post_id: 1 } } }] } }] };
+      return { candidates: [{ content: { parts: [{ text: 'Reported back.' }] } }] };
+    },
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, agent, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  const p = await svc.createPost(u1, { text: 'ready', accountIds: [a.id] });
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza', model: 'm' } });
+
+  await agent.chat(u1, { message: 'publish it' });
+  assert.equal((await svc.getPost(u1, p.id)).status, 'queued', 'not published while switched off');
+
+  await svc.settings.update(u1, { agentCanPublish: true });
+  await agent.chat(u1, { message: 'publish it' });
+  assert.equal((await svc.getPost(u1, p.id)).status, 'published');
+
+  // a failing tool comes back as a message, it does not break the turn
+  turn = 0;
+  const r = await agent.chat(u1, { message: 'publish post 999' });
+  assert.match(r.reply, /Reported back/);
+  await fake.close();
+});
+
+test('agent: Claude drives the same tools', async () => {
+  let n = 0;
+  const fake = await fakeServer({
+    'POST /v1/messages': () => {
+      n++;
+      const base = { id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 1 } };
+      if (n === 1) return { ...base, stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'list_posts', input: { status: 'queued' } }] };
+      return { ...base, stop_reason: 'end_turn', content: [{ type: 'text', text: 'You have one post waiting.' }] };
+    },
+  });
+  process.env.ANTHROPIC_BASE_URL = fake.url;
+  const { svc, agent, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  await svc.createPost(u1, { text: 'waiting', accountIds: [a.id] });
+  await svc.settings.update(u1, { ai: { provider: 'anthropic', apiKey: 'sk-ant' } });
+  const r = await agent.chat(u1, { message: "what's in my queue?" });
+  assert.match(r.reply, /one post waiting/);
+  assert.deepEqual(r.used.map((u) => u.name), ['list_posts']);
+  assert.equal(fake.calls[0].json.tools.find((t) => t.name === 'add_to_queue').input_schema.type, 'object');
+  delete process.env.ANTHROPIC_BASE_URL;
+  await fake.close();
+});
+
+test('the log credits the right actor: you, the agent, the assistant or the timer', async () => {
+  let n = 0;
+  const fake = await fakeServer({
+    'POST /v1beta/models/m:generateContent': () => (++n === 1
+      ? { candidates: [{ content: { parts: [{ functionCall: { name: 'add_to_queue', args: { text: 'by the agent', account_ids: [1] } } }] } }] }
+      : { candidates: [{ content: { parts: [{ text: 'Queued it.' }] } }] }),
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, agent, events, serviceAs, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });                       // you
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza', model: 'm' } });
+  await agent.chat(u1, { message: 'queue something' });                        // agent
+  const due = new Date(Date.now() - 1000).toISOString();
+  await svc.createPost(u1, { text: 'timed', accountIds: [a.id], scheduledAt: due });
+  await serviceAs('timer').runDue({ uid: u1 });                                // timer
+
+  const by = (kind) => (log.filter((e) => e.kind === kind));
+  const log = await events.list(u1);
+  assert.equal(by('account')[0].actor, 'you');
+  assert.equal(by('agent')[0].actor, 'agent');
+  const queuedByAgent = log.find((e) => e.kind === 'queued' && e.detail?.source === 'agent');
+  assert.equal(queuedByAgent.actor, 'agent', 'a post the agent queued is not credited to you');
+  assert.equal(log.find((e) => e.kind === 'published').actor, 'timer', 'the timer publishing is credited to the timer');
+  await fake.close();
+});

@@ -63,6 +63,7 @@ export function createSettings(db, vault) {
         autoPublish: !!lastCronAt && Date.now() - new Date(lastCronAt).getTime() < 3 * 3600e3,
         effectiveUrl: base,
         alertsAccountId: await s.get(uid, 'alertsAccountId'),
+        agentCanPublish: !!(await s.get(uid, 'agentCanPublish')),
         utm: await s.get(uid, 'utm', { enabled: false, source: '{network}', medium: 'social', campaign: '' }),
         ai: {
           provider: AI_PROVIDERS[ai.provider] ? ai.provider : 'gemini',
@@ -82,6 +83,7 @@ export function createSettings(db, vault) {
         await s.set(uid, 'publicUrl', u || null);
       }
       if ('alertsAccountId' in patch) await s.set(uid, 'alertsAccountId', patch.alertsAccountId ? Number(patch.alertsAccountId) : null);
+      if ('agentCanPublish' in patch) await s.set(uid, 'agentCanPublish', !!patch.agentCanPublish);
       if (patch.utm) {
         const u = patch.utm;
         await s.set(uid, 'utm', { enabled: !!u.enabled, source: String(u.source ?? '').slice(0, 100), medium: String(u.medium ?? '').slice(0, 100), campaign: String(u.campaign ?? '').slice(0, 100) });

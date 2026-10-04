@@ -69,6 +69,16 @@ The app has no clock of its own (that is what lets it run on Vercel's free plan)
 
 Without a timer nothing is lost — scheduled posts simply wait in the app until you publish them.
 
+## The built-in agent
+
+Open **Agent** in the sidebar and type what you want: *"write three posts about the weekend sale and queue them"*, *"what's in my queue?"*, *"did anything fail recently, and why?"*. It uses the app's own tools and shows you which ones it used.
+
+It runs on the same API key as the AI assistant (Gemini's free tier is fine). **Publishing is switched off until you allow it** — the toggle is at the top of the Agent page. With it off the agent can write, queue, schedule, edit and read results, but cannot send anything out.
+
+## Activity log
+
+**Activity** in the sidebar records everything: posts published or failed (with the error), accounts connected, settings changed, timer runs, RSS items and every tool the agent or a connected assistant used. Each entry says who did it — you, the agent, the assistant, the timer or RSS — so nothing that happens while you are away is a mystery. Filter by kind, or switch on *Only problems*.
+
 ## Let an assistant post for you (MCP)
 
 Social Poster speaks **MCP**, so Claude can use it: *“draft three posts about the new menu and queue them”*, *“what did best last month?”*, *“publish the next one”*.
@@ -76,12 +86,12 @@ Social Poster speaks **MCP**, so Claude can use it: *“draft three posts about 
 1. In the app go to **Settings → Assistant access**, create a key and copy it.
 2. In Claude: **Settings → Connectors → Add custom connector**, and paste the connector URL shown on that page (`https://your-app/mcp`). If it asks for a key, paste the key; if it only accepts a URL, use the full URL with `?key=…` that the app shows you.
 
-The assistant gets these tools: `list_accounts`, `add_to_queue`, `publish_post`, `list_posts`, `update_post`, `delete_post`, `check_post` and `get_analytics`. New posts go to the **queue** by default — nothing is published unless you ask for it. Remove a key any time to cut access off.
+The assistant gets these tools: `list_accounts`, `add_to_queue`, `publish_post`, `list_posts`, `update_post`, `delete_post`, `check_post`, `get_activity_log` and `get_analytics`. New posts go to the **queue** by default — nothing is published unless you ask for it. Remove a key any time to cut access off.
 
 ## Development
 
 ```sh
-npm test          # 42 tests on SQLite
+npm test          # 48 tests on SQLite
 npm run test:pg   # the same tests on Postgres (expects one at 127.0.0.1:5433)
 npm run vendor    # rebuild public/vendor/blob-upload.js (browser upload helper)
 ```

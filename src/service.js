@@ -20,7 +20,7 @@ const ints = (a) => [...new Set((Array.isArray(a) ? a : []).map(Number).filter(N
 const now = () => new Date().toISOString();
 const STALE_MS = 10 * 60e3; // a publish that never finished (e.g. a killed serverless function)
 
-export function createService(db, { vault = createVault(loadKey()), mediaDir, blobToken } = {}) {
+export function createService(db, { vault = createVault(loadKey()), mediaDir, blobToken, events = { add: async () => {} }, actor = 'you' } = {}) {
   const settings = createSettings(db, vault);
   const media = createMedia(db, { dir: mediaDir, ...(blobToken !== undefined && { blobToken }) });
   const cfg = (a) => vault.open(a.config);
@@ -95,7 +95,9 @@ const whenFrom = (body, slot) => {
 };
 
   const svc = {
-    db, vault, settings, media, tzOf, providerCtx,
+    db, vault, settings, media, tzOf, providerCtx, events,
+    /** Who is acting — 'you', 'agent', 'assistant' or 'timer'. Fixed when the service is made. */
+    actor,
 
     // ---------------- accounts
     listAccounts: async (uid) => (await db.all('SELECT * FROM accounts WHERE user_id=? ORDER BY type, name', uid)).map(accountView),
@@ -115,7 +117,9 @@ const whenFrom = (body, slot) => {
       }
       const id = await db.insert('INSERT INTO accounts(user_id,name,type,config,handle,avatar,external_id,profile_url) VALUES (?,?,?,?,?,?,?,?)',
         uid, await uniqueName(uid, name?.trim() || info.name || prov.label), type, vault.seal(clean), info.handle || null, info.avatar || null, info.external_id || null, info.profile_url || null);
-      return accountView(await ownedAccount(uid, id));
+      const acc = accountView(await ownedAccount(uid, id));
+      await events.add(uid, 'account', `Connected ${acc.name} (${prov.label})`, { actor: svc.actor, accountId: id });
+      return acc;
     },
 
     /** Create or refresh an account returned by a login (OAuth) flow. */
@@ -124,11 +128,14 @@ const whenFrom = (body, slot) => {
       if (existing) {
         await db.run("UPDATE accounts SET config=?, handle=?, avatar=?, profile_url=?, status='ok', last_error=NULL WHERE id=?",
           vault.seal(acc.config), acc.handle || existing.handle, acc.avatar || existing.avatar, acc.profile_url || existing.profile_url, existing.id);
+        await events.add(uid, 'account', `Reconnected ${existing.name}`, { actor: svc.actor, accountId: existing.id });
         return accountView(await ownedAccount(uid, existing.id));
       }
       const id = await db.insert('INSERT INTO accounts(user_id,name,type,config,handle,avatar,external_id,profile_url) VALUES (?,?,?,?,?,?,?,?)',
         uid, await uniqueName(uid, acc.name || providers[acc.type].label), acc.type, vault.seal(acc.config), acc.handle || null, acc.avatar || null, acc.external_id ? String(acc.external_id) : null, acc.profile_url || null);
-      return accountView(await ownedAccount(uid, id));
+      const saved = accountView(await ownedAccount(uid, id));
+      await events.add(uid, 'account', `Connected ${saved.name} (${providers[acc.type].label})`, { actor: svc.actor, accountId: id });
+      return saved;
     },
 
     async renameAccount(uid, id, name) {
@@ -136,7 +143,12 @@ const whenFrom = (body, slot) => {
       await db.run('UPDATE accounts SET name=? WHERE id=?', await uniqueName(uid, name, id), id);
       return accountView(await ownedAccount(uid, id));
     },
-    deleteAccount: (uid, id) => db.run('DELETE FROM accounts WHERE id=? AND user_id=?', id, uid),
+    async deleteAccount(uid, id) {
+      const a = await db.get('SELECT name FROM accounts WHERE id=? AND user_id=?', id, uid);
+      const r = await db.run('DELETE FROM accounts WHERE id=? AND user_id=?', id, uid);
+      if (a) await events.add(uid, 'account', `Removed ${a.name}`, { actor: svc.actor, level: 'warn' });
+      return r;
+    },
 
     async checkAccount(uid, id) {
       const a = await ownedAccount(uid, id);
@@ -277,6 +289,11 @@ const whenFrom = (body, slot) => {
       if (body.useSlot && !when) throw httpError(400, 'No free posting time in the next two months — add more times');
       if (body.publishNow || when) await svc.validate(uid, c);
       const id = await svc.insertPost(uid, c, { source, when });
+      if (!body.publishNow) {
+        await events.add(uid, when ? 'scheduled' : 'queued',
+          when ? `Scheduled for ${when.toISOString()}` : 'Added to the queue',
+          { actor: svc.actor, postId: id, detail: { text: c.text.slice(0, 200), accounts: c.accountIds.length, source } });
+      }
       return body.publishNow ? svc.publish(uid, id) : svc.getPost(uid, id);
     },
 
@@ -310,10 +327,16 @@ const whenFrom = (body, slot) => {
           ON CONFLICT(post_id,account_id) DO UPDATE SET text_override=excluded.text_override`, id, aid, c.overrides[aid] ?? null);
       }
       await db.run("UPDATE deliveries SET status='pending', error=NULL WHERE post_id=? AND status='failed'", id);
+      if (!body.publishNow) await events.add(uid, 'updated', `Edited post #${id}`, { actor: svc.actor, postId: id });
       return body.publishNow ? svc.publish(uid, id) : svc.getPost(uid, id);
     },
 
-    deletePost: (uid, id) => db.run('DELETE FROM posts WHERE id=? AND user_id=?', id, uid),
+    async deletePost(uid, id) {
+      const p = await db.get('SELECT text FROM posts WHERE id=? AND user_id=?', id, uid);
+      const r = await db.run('DELETE FROM posts WHERE id=? AND user_id=?', id, uid);
+      if (p) await events.add(uid, 'deleted', `Deleted post #${id}`, { actor: svc.actor, level: 'warn', detail: { text: p.text.slice(0, 200) } });
+      return r;
+    },
 
     /** Reorder the queue: dir = 'up' | 'down' | 'top'. */
     async move(uid, id, dir) {
@@ -412,6 +435,7 @@ const whenFrom = (body, slot) => {
         overrides: p.overrides, notes: p.notes,
         recycleDays: p.recycle_days, recycleLeft: p.recycle_left === null ? null : p.recycle_left - 1,
       }, { source: 'evergreen', when });
+      await events.add(uid, 'scheduled', `Evergreen: next copy scheduled for ${when.toISOString()}`, { actor: 'timer', postId: id });
       return id;
     },
 
@@ -459,9 +483,18 @@ const whenFrom = (body, slot) => {
           }
         }
       }));
-      const all = (await db.all('SELECT status FROM deliveries WHERE post_id=?', postId)).map((r) => r.status);
+      const rows = await db.all(`SELECT d.status, d.error, d.remote_url, a.name, a.type FROM deliveries d JOIN accounts a ON a.id=d.account_id WHERE d.post_id=?`, postId);
+      const all = rows.map((r) => r.status);
       const status = all.length && all.every((s) => s === 'published') ? 'published' : all.some((s) => s === 'published') ? 'partial' : 'failed';
       await db.run('UPDATE posts SET status=?, posted_at=? WHERE id=?', status, now(), postId);
+      const ok = rows.filter((r) => r.status === 'published');
+      const bad = rows.filter((r) => r.status === 'failed');
+      await events.add(uid, status === 'failed' ? 'failed' : 'published',
+        status === 'published' ? `Published to ${ok.map((r) => r.name).join(', ')}`
+          : status === 'partial' ? `Published to ${ok.map((r) => r.name).join(', ')}, failed on ${bad.map((r) => r.name).join(', ')}`
+          : `Failed to publish: ${bad.map((r) => `${r.name} (${r.error})`).join('; ')}`,
+        { actor: svc.actor, level: status === 'published' ? 'info' : status === 'partial' ? 'warn' : 'error', postId,
+          detail: { results: rows.map((r) => ({ account: r.name, network: r.type, status: r.status, url: r.remote_url, error: r.error })) } });
       if (status !== 'published') await svc.alert(uid, postId).catch((e) => console.error('alert failed:', e.message));
     },
     retryDelayMs: 2000,

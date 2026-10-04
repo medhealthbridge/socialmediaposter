@@ -311,3 +311,47 @@ test('a scheduled post can be moved back to the queue and rescheduled', async ()
   assert.equal(edited.status, 'scheduled', 'editing the text keeps the schedule');
   assert.equal(edited.scheduled_at, again.scheduled_at);
 });
+
+test('activity log records what happened, who did it, and problems', async () => {
+  const { svc, events, u1 } = await setup();
+  const ok = await svc.addAccount(u1, { type: 'mock', name: 'ok' });
+  const bad = await svc.upsertOAuthAccount(u1, { type: 'mock', name: 'bad', external_id: 'b', config: { failWith: '400 nope' } });
+  const p = await svc.createPost(u1, { text: 'hello log', accountIds: [ok.id] });
+  await svc.publish(u1, p.id);
+  const f = await svc.createPost(u1, { text: 'will fail', accountIds: [bad.id] });
+  await svc.publish(u1, f.id);
+  await svc.deletePost(u1, f.id);
+
+  const all = await events.list(u1);
+  const kinds = all.map((e) => e.kind);
+  assert.ok(kinds.includes('account') && kinds.includes('queued') && kinds.includes('published') && kinds.includes('failed') && kinds.includes('deleted'));
+  const published = all.find((e) => e.kind === 'published');
+  assert.match(published.summary, /Published to ok/);
+  assert.equal(published.detail.results[0].network, 'mock');
+  assert.equal(published.actor, 'you');
+
+  const problems = await events.list(u1, { level: 'problem' });
+  assert.ok(problems.every((e) => e.level === 'error' || e.level === 'warn'));
+  assert.ok(problems.some((e) => /400 nope/.test(e.summary)));
+  assert.equal((await events.list(u1, { kind: 'published' })).length, 1);
+
+  // Each person only sees their own log.
+  const { events: e2, u2 } = { events, u2: (await setup()).u2 };
+  assert.equal((await e2.list(u2)).length, 0);
+});
+
+test('the timer and RSS are logged under their own name', async () => {
+  const rss = '<?xml version="1.0"?><rss><channel><title>Blog</title><item><title>Post one</title><link>https://b/1</link><guid>g1</guid></item></channel></rss>';
+  let items = '';
+  const fake = await fakeServer({ 'GET /feed': () => ({ headers: { 'content-type': 'application/rss+xml' }, body: items }) });
+  const { svc, feeds, events, u1 } = await setup();
+  const a = await svc.addAccount(u1, { type: 'mock' });
+  items = '<?xml version="1.0"?><rss><channel><title>Blog</title></channel></rss>';
+  const f = await feeds.add(u1, { url: `${fake.url}/feed`, accountIds: [a.id], mode: 'queue' });
+  items = rss;
+  await feeds.checkNow(u1, f.id);
+  const rssEvent = (await events.list(u1, { kind: 'rss' }))[0];
+  assert.match(rssEvent.summary, /Post one/);
+  assert.equal(rssEvent.actor, 'rss');
+  await fake.close();
+});

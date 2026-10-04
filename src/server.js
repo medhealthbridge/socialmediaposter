@@ -11,6 +11,8 @@ import { createAnalytics } from './analytics.js';
 import { createAI, AI_PROVIDERS } from './ai.js';
 import { createOAuth } from './oauth.js';
 import { createMcp } from './mcp.js';
+import { createEvents, KINDS } from './events.js';
+import { createAgent } from './agent.js';
 import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
@@ -29,12 +31,26 @@ const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() |
 
 /** Wires every module together. */
 export async function createContext(db, opts = {}) {
-  const svc = createService(db, opts);
+  const events = createEvents(db);
+  // One service per actor, so the activity log can say who did something —
+  // you, the assistant, the agent or the timer. They are stateless, so they are reused.
+  const byActor = new Map();
+  const serviceAs = (actor) => {
+    if (!byActor.has(actor)) byActor.set(actor, createService(db, { ...opts, events, actor }));
+    return byActor.get(actor);
+  };
+  const svc = serviceAs('you');
   const analytics = createAnalytics(svc);
-  return { db, svc, auth: createAuth(db, opts), feeds: createFeeds(svc), analytics, ai: createAI(svc.settings), oauth: createOAuth(svc), mcp: createMcp({ svc, analytics, db }) };
+  const ai = createAI(svc.settings);
+  return {
+    db, svc, serviceAs, events, analytics, ai,
+    auth: createAuth(db, opts), feeds: createFeeds(serviceAs('rss')), oauth: createOAuth(svc),
+    mcp: createMcp({ svc: serviceAs('assistant'), analytics, db }),
+    agent: createAgent({ serviceAs, analytics, settings: svc.settings }),
+  };
 }
 
-function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
+function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agent }) {
   const routes = [];
   const r = (method, pattern, handler, opts = {}) => {
     const keys = [];
@@ -50,10 +66,10 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
     await svc.settings.noteOrigin(uid, originOf(req));
     await svc.maintain(uid).catch(() => {});
     return {
-      user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind,
+      user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind, eventKinds: KINDS,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
       mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
-      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid),
+      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid), agentTools: agent.tools,
     };
   });
 
@@ -64,7 +80,11 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
   r('DELETE', '/api/users/:id', ({ params }) => auth.deleteUser(id(params)), { admin: true });
 
   r('GET', '/api/settings', ({ uid }) => svc.settings.view(uid));
-  r('PUT', '/api/settings', ({ uid, body }) => svc.settings.update(uid, body));
+  r('PUT', '/api/settings', async ({ uid, body }) => {
+    const out = await svc.settings.update(uid, body);
+    await events.add(uid, 'settings', `Changed settings: ${Object.keys(body).join(', ')}`);
+    return out;
+  });
 
   r('GET', '/api/accounts', ({ uid }) => svc.listAccounts(uid));
   r('POST', '/api/accounts', ({ uid, body }) => svc.addAccount(uid, body), { status: 201 });
@@ -119,8 +139,12 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp }) {
   r('POST', '/api/keys', ({ uid, body }) => mcp.keys.create(uid, body.name), { status: 201 });
   r('DELETE', '/api/keys/:id', ({ uid, params }) => mcp.keys.remove(uid, params.id));
 
+  r('GET', '/api/events', ({ uid, query }) => events.list(uid, { kind: query.get('kind'), level: query.get('level'), limit: query.get('limit'), before: query.get('before') }));
+  r('DELETE', '/api/events', ({ uid }) => events.clear(uid));
+
   r('GET', '/api/analytics', ({ uid, query }) => analytics.stats(uid, { days: Math.min(365, Math.max(7, Number(query.get('days')) || 30)) }));
   r('POST', '/api/analytics/refresh', ({ uid }) => analytics.refreshMetrics({ uid, limit: 40 }));
+  r('POST', '/api/agent', ({ uid, body }) => agent.chat(uid, body));
   r('GET', '/api/ai/models', ({ uid }) => ai.models(uid));
   r('POST', '/api/ai', ({ uid, body }) => ai.assist(uid, body));
   return routes;
@@ -191,12 +215,16 @@ export function createHandler(ctxOrFactory) {
             ? (await ctx.db.all('SELECT id FROM users')).map((u) => u.id)
             : [await svc.settings.ownerOfCronKey(given)].filter((x) => x != null);
           if (!uids.length) return send(401, { error: 'invalid cron key' });
+          const timer = ctx.serviceAs('timer');
           const out = [];
           for (const id of uids) {
             await svc.settings.set(id, 'lastCronAt', new Date().toISOString());
-            const published = await svc.runDue({ uid: id, limit: 50 });
-            const feeds = await ctx.feeds.checkDue(id).catch((e) => ({ error: e.message }));
-            out.push({ user: id, published, feeds });
+            const published = await timer.runDue({ uid: id, limit: 50 });
+            const feedRun = await ctx.feeds.checkDue(id).catch((e) => ({ error: e.message }));
+            if (published.due || feedRun?.created) {
+              await ctx.events.add(id, 'cron', `Timer ran: ${published.due} post(s) due, ${feedRun?.created || 0} from RSS`, { actor: 'timer' });
+            }
+            out.push({ user: id, published, feeds: feedRun });
           }
           return send(200, { ok: true, ran: out });
         }
@@ -206,6 +234,7 @@ export function createHandler(ctxOrFactory) {
           const body = await readJson(req);
           if (path === '/api/auth/signup') await auth.signup(body);
           const s = await auth.login(body, clientIp(req));
+          await ctx.events.add(s.user.id, 'auth', path.endsWith('signup') ? 'Account created' : 'Signed in', { detail: { ip: clientIp(req) } });
           return send(200, s.user, undefined, setCookie(s.token, s.maxAge));
         }
         if (path === '/api/auth/logout') { await auth.logout(token); return send(200, { ok: true }, undefined, setCookie('', 0)); }

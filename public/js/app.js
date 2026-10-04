@@ -3,13 +3,15 @@ import { $, $$, api, state, refresh, refreshCounts, icon, esc, toast, toastError
 const VIEWS = {
   compose: { label: 'Create post', icon: 'compose', load: () => import('./views/compose.js') },
   queue: { label: 'Queue', icon: 'queue', load: () => import('./views/posts.js') },
+  agent: { label: 'Agent', icon: 'sparkle', load: () => import('./views/agent.js') },
+  log: { label: 'Activity', icon: 'list', load: () => import('./views/log.js') },
   analytics: { label: 'Analytics', icon: 'chart', load: () => import('./views/analytics.js') },
   accounts: { label: 'Accounts', icon: 'users', load: () => import('./views/accounts.js') },
   library: { label: 'Library', icon: 'image', load: () => import('./views/library.js') },
   feeds: { label: 'RSS autopilot', icon: 'rss', load: () => import('./views/feeds.js') },
   settings: { label: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
 };
-const NAV = ['queue', 'analytics', 'accounts', 'library', 'feeds', 'settings'];
+const NAV = ['queue', 'agent', 'analytics', 'accounts', 'library', 'feeds', 'log', 'settings'];
 
 let current = null;
 
