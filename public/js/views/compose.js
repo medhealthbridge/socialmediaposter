@@ -250,6 +250,7 @@ export async function render(root, params) {
       ${m.mime.startsWith('video/') ? `<video src="${esc(m.url)}" muted preload="metadata"></video><span class="vid">VIDEO</span>` : `<img src="${esc(m.url)}" alt="${esc(m.alt)}">`}
       <button class="x" data-act="rm" aria-label="Remove">✕</button>
       ${m.mime.startsWith('image/') ? `<button class="crop" data-act="crop" data-tip="Crop to a network's shape">${icon('image')}</button>` : ''}
+      ${m.mime.startsWith('video/') ? `<button class="crop" data-act="clip" data-tip="Cut a short clip for TikTok, Reels or Shorts">${icon('scissors')}</button>` : ''}
       <button class="alt ${m.alt ? 'has' : ''}" data-act="alt" data-tip="${m.alt ? esc(m.alt) : 'Add a description for screen readers'}">ALT</button></div>`).join('')
       + Array.from({ length: s.uploads }, () => '<div class="thumb uploading"><span>Uploading…</span><span class="bar" style="width:0"></span></div>').join('');
   }
@@ -281,6 +282,11 @@ export async function render(root, params) {
       const { cropImage } = await import('../crop.js');
       const cropped = await cropImage(m);
       if (cropped) { s.media[i] = cropped; renderThumbs(); update(); }
+    }
+    if (b.dataset.act === 'clip') {
+      const { makeClip } = await import('../clip.js');
+      const clip = await makeClip(m);
+      if (clip) { s.media[i] = clip; renderThumbs(); update(); }
     }
     if (b.dataset.act === 'alt') {
       modal({ title: 'Describe this image', body: `<p class="text-2 small">Alt text helps people using screen readers. It's sent to networks that support it.</p><textarea id="altText" rows="3" maxlength="1500">${esc(m.alt)}</textarea>`,

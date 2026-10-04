@@ -4,6 +4,7 @@ import { setup, PNG, JPEG, chunks, fakeServer, closeAll } from './helpers.js';
 import { parseCsv } from '../src/service.js';
 import { blueskyFacets, linkedinText, addUtm, lengthUrlsAs } from '../src/providers/text.js';
 import { parseFeed } from '../src/feeds.js';
+import { SHAPES, clipArgs, fmtTime } from '../public/js/clipargs.js';
 
 after(closeAll);
 
@@ -354,4 +355,23 @@ test('the timer and RSS are logged under their own name', async () => {
   assert.match(rssEvent.summary, /Post one/);
   assert.equal(rssEvent.actor, 'rss');
   await fake.close();
+});
+
+test('clip recipes: crop to fill, mute drops the audio, "keep" leaves the shape alone', () => {
+  const vertical = clipArgs({ start: 3, end: 18.5, shape: '9:16', mute: false });
+  assert.deepEqual(vertical.slice(0, 6), ['-ss', '3.00', '-to', '18.50', '-i', 'in.mp4']);
+  assert.equal(vertical[vertical.indexOf('-vf') + 1], 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1');
+  assert.deepEqual(vertical.slice(-7), ['-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', 'out.mp4'], 'audio is kept by default');
+
+  // Muting replaces the audio encoder, it does not just lower the volume.
+  const muted = clipArgs({ start: 0, end: 5, shape: '1:1', mute: true });
+  assert.ok(muted.includes('-an') && !muted.includes('-c:a'));
+  assert.equal(muted[muted.indexOf('-vf') + 1], 'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1');
+
+  // "Keep original shape" must not add a scale filter at all.
+  assert.ok(!clipArgs({ start: 0, end: 1, shape: 'keep', mute: false }).includes('-vf'));
+  // Every network shape has real pixel dimensions; only "keep" is sizeless.
+  for (const s of SHAPES) assert.equal(s.w > 0 && s.h > 0, s.id !== 'keep', s.id);
+  assert.equal(fmtTime(0), '0:00.0');
+  assert.equal(fmtTime(75.46), '1:15.4');
 });

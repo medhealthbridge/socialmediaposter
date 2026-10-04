@@ -17,7 +17,9 @@ import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
-const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://*.vercel-storage.com https://vercel.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+// The clip maker runs ffmpeg as WebAssembly inside a worker it builds from a blob, so
+// script-src needs blob: and 'wasm-unsafe-eval', and the engine itself may come from jsDelivr.
+const CSP = "default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' blob: https://*.vercel-storage.com https://vercel.com https://cdn.jsdelivr.net; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 const timingSafeEqualStr = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && timingSafeEqual(x, y);

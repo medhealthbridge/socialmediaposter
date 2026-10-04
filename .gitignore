@@ -3,3 +3,4 @@ data/
 *.db
 .env
 .vercel
+public/vendor/ffmpeg-core/

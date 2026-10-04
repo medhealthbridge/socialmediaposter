@@ -143,6 +143,7 @@ const P = {
   recycle: '<path d="M7 19H4.8a1.8 1.8 0 0 1-1.6-2.7L5 13M11 19h8.2a1.8 1.8 0 0 0 1.6-2.7L19 13M14 16l-3 3 3 3M8.3 13.4 5 13l-.6 3.3M9.3 5.2 11 2.4a1.8 1.8 0 0 1 3 0l1.6 2.8M15 2.5l1 3.5-3.5.9"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M8.1 8.1 20 20"/>',
 };
 export const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
 
