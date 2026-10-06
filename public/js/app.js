@@ -8,10 +8,11 @@ const VIEWS = {
   analytics: { label: 'Analytics', icon: 'chart', load: () => import('./views/analytics.js') },
   accounts: { label: 'Accounts', icon: 'users', load: () => import('./views/accounts.js') },
   library: { label: 'Library', icon: 'image', load: () => import('./views/library.js') },
+  drive: { label: 'Google Drive', icon: 'download', load: () => import('./views/drive.js') },
   feeds: { label: 'RSS autopilot', icon: 'rss', load: () => import('./views/feeds.js') },
   settings: { label: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
 };
-const NAV = ['queue', 'agent', 'analytics', 'accounts', 'library', 'feeds', 'log', 'settings'];
+const NAV = ['queue', 'agent', 'analytics', 'accounts', 'library', 'drive', 'feeds', 'log', 'settings'];
 
 let current = null;
 

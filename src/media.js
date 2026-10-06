@@ -28,6 +28,28 @@ export function sniff(buf) {
   if (buf.subarray(4, 8).toString() === 'ftyp') return buf.subarray(8, 10).toString() === 'qt' ? 'video/quicktime' : 'video/mp4';
   return null;
 }
+/**
+ * Read just enough of a stream to identify the file, then give back an equivalent stream
+ * with those first bytes put back. Lets us check a file we are only passing through.
+ */
+async function sniffStream(chunks) {
+  const it = chunks[Symbol.asyncIterator] ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
+  const seen = [];
+  let head = Buffer.alloc(0);
+  while (head.length < 16) {
+    const { value, done } = await it.next();
+    if (done) break;
+    const buf = Buffer.from(value);
+    seen.push(buf);
+    head = Buffer.concat([head, buf]);
+  }
+  async function* rest() {
+    for (const b of seen) yield b;
+    for (let r = await it.next(); !r.done; r = await it.next()) yield Buffer.from(r.value);
+  }
+  return { mime: sniff(head), rest };
+}
+
 const cleanName = (n) => String(n || 'upload').replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'upload';
 
 export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', blobToken = process.env.BLOB_READ_WRITE_TOKEN } = {}) {
@@ -74,6 +96,38 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
         await unlink(tmp).catch(() => {});
         throw e;
       }
+    },
+
+    /**
+     * Store a file we are pulling in ourselves (today: Google Drive), whichever backend is in use.
+     * The bytes stream straight through to storage, so a large video never sits in memory.
+     */
+    async fromStream(uid, chunks, { filename, size = 0 } = {}) {
+      if (kind === 'none') throw httpError(400, NEEDS_BLOB);
+      if (size > MAX_VIDEO) throw httpError(413, 'that file is larger than 1 GB');
+      if (kind === 'disk') return m.save(uid, chunks, { filename });
+
+      const { mime, rest } = await sniffStream(chunks);
+      if (!mime) throw httpError(415, 'only JPEG, PNG, GIF, WebP, MP4 and MOV files are supported');
+      if (mime.startsWith('image/') && size > MAX_IMAGE) throw httpError(413, 'images must be under 20 MB');
+      const { Readable } = await import('node:stream');
+      const { put } = await blob();
+      const token = randomBytes(18).toString('base64url');
+      // Count as we go: the size the other end claimed is not always the size that arrives.
+      let real = 0;
+      const counted = async function* () {
+        for await (const b of rest()) {
+          real += b.length;
+          if (real > MAX_VIDEO) throw httpError(413, 'file too large (max 1 GB)');
+          yield b;
+        }
+      };
+      const saved = await put(`u${uid}/${token}.${TYPES[mime]}`, Readable.from(counted()), {
+        token: blobToken, access: 'public', contentType: mime, addRandomSuffix: true,
+      });
+      const id = await db.insert('INSERT INTO media(user_id,token,filename,mime,size,url) VALUES (?,?,?,?,?,?)',
+        uid, token, cleanName(filename), mime, real, saved.url);
+      return m.get(uid, id);
     },
 
     /** Blob backend: issue a short-lived client upload token (browser → Vercel Blob directly). */

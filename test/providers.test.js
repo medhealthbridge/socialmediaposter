@@ -11,6 +11,7 @@ import * as TT from '../src/providers/tiktok.js';
 import * as YT from '../src/providers/youtube.js';
 import * as PIN from '../src/providers/pinterest.js';
 import * as AI from '../src/ai.js';
+import * as DRIVE from '../src/drive.js';
 
 after(closeAll);
 const publishOne = (svc, uid, acc, body = {}) => svc.createPost(uid, { text: 'hello #world https://ex.com', accountIds: [acc.id], publishNow: true, ...body });
@@ -634,4 +635,100 @@ test('threads: networks that cannot do them say so, and Telegram replies', async
   assert.equal(msgs[0].json.reply_parameters, undefined);
   assert.equal(msgs[1].json.reply_parameters.message_id, 5, 'the second message replies to the first');
   await tg.close();
+});
+
+test('Google Drive: links are parsed, videos pair with their .txt, and importing stores both', async () => {
+  const MP4 = Buffer.concat([Buffer.from('00000018', 'hex'), Buffer.from('ftypisom'), Buffer.alloc(84)]);
+  const fake = await fakeServer({
+    // The folder itself, then its contents.
+    'GET /files/FOLDER': (c) => (c.query.key !== 'AIza-drive' ? { status: 403, body: { error: { message: 'API key not valid' } } }
+      : { id: 'FOLDER', name: 'Clips', mimeType: 'application/vnd.google-apps.folder' }),
+    'GET /files': {
+      files: [
+        { id: 'v1', name: 'Launch Day.mp4', mimeType: 'video/mp4', size: '96', modifiedTime: '2026-02-01T00:00:00Z', videoMediaMetadata: { durationMillis: '9000' } },
+        { id: 't1', name: 'launch day.txt', mimeType: 'text/plain', modifiedTime: '2026-02-01T00:00:00Z' },
+        { id: 'v2', name: 'orphan.mp4', mimeType: 'video/mp4', size: '96', modifiedTime: '2026-01-01T00:00:00Z' },
+        { id: 'z', name: 'notes.pdf', mimeType: 'application/pdf' },
+      ],
+    },
+    'GET /files/v1': (c) => (c.query.alt === 'media' ? { body: MP4.toString('latin1') } : { id: 'v1', name: 'Launch Day.mp4', mimeType: 'video/mp4', size: '96' }),
+    'GET /files/t1': { body: '﻿Our launch day!\r\nIts been a long time comming.' },
+  });
+  DRIVE.endpoints.drive = fake.url;
+  const { svc, drive, events, u1 } = await setup();
+
+  // Link parsing is pure, and refuses anything that is not a Google address.
+  assert.deepEqual(DRIVE.parseDriveLink('https://drive.google.com/drive/folders/FOLDER?usp=sharing'), { kind: 'folder', id: 'FOLDER' });
+  assert.deepEqual(DRIVE.parseDriveLink('https://drive.google.com/file/d/v1/view'), { kind: 'file', id: 'v1' });
+  assert.equal(DRIVE.parseDriveLink('https://drive.evil.example/drive/folders/FOLDER'), null);
+
+  await assert.rejects(drive.list(u1, 'https://drive.google.com/drive/folders/FOLDER'), /Google API key/, 'no key yet');
+  await svc.settings.update(u1, { drive: { apiKey: 'AIza-drive' } });
+
+  const { folder, items } = await drive.list(u1, 'https://drive.google.com/drive/folders/FOLDER');
+  assert.equal(folder, 'Clips');
+  assert.deepEqual(items.map((i) => i.name), ['Launch Day.mp4', 'orphan.mp4'], 'newest first, non-media skipped');
+  assert.equal(items[0].textName, 'launch day.txt', 'pairs across different capitalisation');
+  assert.equal(items[0].duration, 9);
+  assert.equal(items[1].textId, null, 'a video with no twin is still offered');
+
+  const got = await drive.import(u1, { fileId: 'v1', textId: 't1' });
+  assert.equal(got.media.mime, 'video/mp4');
+  assert.equal(got.media.size, 96);
+  assert.equal(got.description, 'Our launch day!\nIts been a long time comming.', 'BOM and CRLF cleaned off');
+  assert.equal((await svc.media.list(u1)).length, 1, 'the video is in the library');
+
+  // Everything shows up in the activity log, and the key never comes back out.
+  const log = await events.list(u1, { kind: 'drive' });
+  assert.match(log.map((e) => e.summary).join(' | '), /Imported “Launch Day.mp4”/);
+  assert.equal(JSON.stringify(await svc.settings.view(u1)).includes('AIza-drive'), false, 'the key is never sent to the browser');
+  assert.equal((await svc.settings.view(u1)).drive.hasKey, true);
+  await fake.close();
+});
+
+test('Google Drive: Google’s errors are turned into instructions you can act on', async () => {
+  const fake = await fakeServer({
+    'GET /files/PRIVATE': { status: 404, body: { error: { message: 'File not found: PRIVATE.' } } },
+    'GET /files/CLOSED': { status: 403, body: { error: { message: 'The caller does not have permission' } } },
+    'GET /files/OFF': { status: 403, body: { error: { message: 'Google Drive API has not been used in project 1 before or it is disabled' } } },
+  });
+  DRIVE.endpoints.drive = fake.url;
+  const { svc, drive, u1 } = await setup();
+  await svc.settings.update(u1, { drive: { apiKey: 'k' } });
+  await assert.rejects(drive.list(u1, 'https://drive.google.com/drive/folders/PRIVATE'), /not found.*shared as/is);
+  await assert.rejects(drive.list(u1, 'https://drive.google.com/drive/folders/CLOSED'), /Anyone with the link/);
+  await assert.rejects(drive.list(u1, 'https://drive.google.com/drive/folders/OFF'), /Enable .Google Drive API./);
+  await assert.rejects(drive.list(u1, 'nonsense'), /does not look like a Google Drive link/);
+  await fake.close();
+});
+
+test('grammar check: fixes are reported, a clean post is left alone', async () => {
+  const fake = await fakeServer({
+    'POST /v1beta/models/g:generateContent': (c) => {
+      const asked = c.json.contents[0].parts[0].text;
+      const body = /comming/.test(asked)
+        ? { corrected: 'Its been a long time coming.', changes: [{ before: 'comming', after: 'coming', why: 'spelling' }, { before: 'same', after: 'same', why: 'ignored' }] }
+        : { corrected: 'All good here.', changes: [] };
+      return { candidates: [{ content: { parts: [{ text: JSON.stringify(body) }] }, finishReason: 'STOP' }], modelVersion: 'g' };
+    },
+  });
+  AI.endpoints.gemini = fake.url;
+  const { svc, ai, u1 } = await setup();
+  await svc.settings.update(u1, { ai: { apiKey: 'AIza', model: 'g' } });
+
+  const fixed = await ai.grammar(u1, 'Its been a long time comming.');
+  assert.equal(fixed.changed, true);
+  assert.equal(fixed.corrected, 'Its been a long time coming.');
+  assert.deepEqual(fixed.changes, [{ before: 'comming', after: 'coming', why: 'spelling' }], 'no-op changes are dropped');
+
+  const clean = await ai.grammar(u1, 'All good here.');
+  assert.equal(clean.changed, false, 'unchanged text is reported as clean');
+  assert.equal(clean.corrected, 'All good here.');
+
+  // It proofreads, it does not rewrite — the instructions must say so.
+  const sent = fake.find('POST', '/v1beta/models/g:generateContent')[0].json;
+  assert.match(sent.systemInstruction.parts[0].text, /proofreader/i);
+  assert.match(sent.systemInstruction.parts[0].text, /Do not rewrite/i);
+  await assert.rejects(ai.grammar(u1, '   '), /nothing to check/);
+  await fake.close();
 });

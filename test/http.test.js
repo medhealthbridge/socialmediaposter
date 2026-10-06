@@ -251,3 +251,16 @@ test('CRON_SECRET runs every user, as Vercel Cron does', async () => {
   delete process.env.CRON_SECRET;
   srv.closeAllConnections(); srv.close();
 });
+
+test('a reply that carries its own list of changes is not mistaken for a database result', async () => {
+  const { srv, ctx, call } = await boot();
+  const cookie = (await call('/api/auth/signup', { method: 'POST', body: { email: 'me@x.io', password: 'longenough' } })).cookie;
+  // Only a database write result (a numeric `changes`) collapses to {ok:true}; anything else
+  // is the answer itself. The grammar check returns a list of changes and must survive.
+  ctx.ai.grammar = async () => ({ corrected: 'fixed', changed: true, changes: [{ before: 'teh', after: 'the', why: 'typo' }] });
+  const r = await call('/api/ai/grammar', { method: 'POST', cookie, body: { text: 'teh' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.corrected, 'fixed');
+  assert.deepEqual(r.json.changes, [{ before: 'teh', after: 'the', why: 'typo' }]);
+  srv.closeAllConnections(); srv.close();
+});

@@ -44,6 +44,16 @@ export async function render(root, params) {
           <div class="row" id="accs"></div>
         </section>
 
+        ${s.id ? '' : `<section class="card card-pad col" id="startBox">
+          <div class="row"><h3>Start from</h3><span class="muted small grow">Where is this post coming from?</span></div>
+          <div class="row" id="sources">
+            <button type="button" class="chip plain" data-src="drive" data-tip="Pick a video from a Drive folder — its description comes along">${icon('download')} Google Drive</button>
+            <button type="button" class="chip plain" data-src="clip" data-tip="Trim a long video into a short vertical clip">${icon('scissors')} Video clip</button>
+            <button type="button" class="chip plain" data-src="image" data-tip="Add a picture, and crop it to a network's shape">${icon('image')} Picture</button>
+            <button type="button" class="chip plain" data-src="manual" data-tip="Just type">${icon('compose')} Write it myself</button>
+          </div>
+        </section>`}
+
         <section class="col">
           <div class="editor" id="editor">
             <textarea id="text" rows="7" placeholder="What would you like to share?" aria-label="Post text"></textarea>
@@ -52,6 +62,7 @@ export async function render(root, params) {
               <button class="btn ghost sm" id="addMedia" data-tip="Add photos or videos (or drag & drop / paste)">${icon('image')} Media</button>
               <button class="btn ghost sm" id="snip" data-tip="Insert a saved hashtag set or snippet">${icon('hash')} Snippets</button>
               <button class="btn ghost sm" id="ai" data-tip="AI writing help">${icon('sparkle')} AI assist</button>
+              <button class="btn ghost sm" id="proof" data-tip="Check spelling and grammar — you approve each fix">${icon('check')} Grammar</button>
               <label class="check small" style="margin-left:6px" data-tip="Write a different version for each account"><span class="switch"><input type="checkbox" id="customize"><span></span></span> Customize per network</label>
               <div class="counts" id="counts"></div>
             </div>
@@ -267,6 +278,7 @@ export async function render(root, params) {
   $('#addMedia', root).onclick = (e) => (state.storage === 'none' ? toast(NEEDS_BLOB, 'bad') : menu(e.currentTarget, [
     { label: 'Upload from device', icon: 'upload', onClick: () => $('#file', root).click() },
     { label: 'Choose from library', icon: 'image', onClick: pickFromLibrary },
+    { label: 'Import from Google Drive', icon: 'download', onClick: () => fromDrive() },
   ]));
   $('#file', root).onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
   const ed = $('#editor', root);
@@ -317,6 +329,67 @@ export async function render(root, params) {
       actions: [{ label: 'Cancel' }, { label: 'Add selected', kind: 'primary', onClick: () => { for (const m of lib) if (chosen.has(m.id) && !s.media.some((x) => x.id === m.id)) s.media.push(m); renderThumbs(); update(); } }],
       onOpen: (d) => { $('#pick', d)?.addEventListener('click', (e) => { const c = e.target.closest('.media-card'); if (!c) return; const id = Number(c.dataset.id); chosen.has(id) ? chosen.delete(id) : chosen.add(id); c.classList.toggle('sel'); }); } });
   }
+
+  // ---------- where a post starts: Drive, a clip, a picture, or just typing
+  /**
+   * Pull a clip and its description out of Google Drive. The description only replaces what
+   * you have written if the box is still empty, so an import never eats your words.
+   */
+  async function fromDrive() {
+    const { pickFromDrive } = await import('../drive.js');
+    const got = await pickFromDrive();
+    if (!got) return;
+    s.media.push(got.media);
+    if (got.description) {
+      if (!s.text.trim()) { s.text = got.description; ta.value = s.text; }
+      else insertAtCursor(got.description);
+    }
+    renderThumbs(); update();
+    if (got.grammarError) toast(`Imported, but the grammar check failed: ${got.grammarError}`, 'bad');
+    else if (got.grammar?.changed) await applyProof(got.grammar);
+    else if (got.grammar) toast('Imported — the description already reads fine', 'ok');
+    else if (!got.description) toast('Imported. No .txt beside it, so write the description yourself.');
+  }
+
+  async function fromClip() {
+    const lib = (await api('/media')).filter((m) => m.mime.startsWith('video/'));
+    if (!lib.length) return toast('Upload or import a video first, then clip it');
+    const source = lib.length === 1 ? lib[0] : (await pickMedia())?.find((m) => m.mime.startsWith('video/'));
+    if (!source) return;
+    const { makeClip } = await import('../clip.js');
+    const clip = await makeClip(source);
+    if (clip) { s.media.push(clip); renderThumbs(); update(); }
+  }
+
+  async function fromImage() {
+    menu($('[data-src=image]', root), [
+      { label: 'Upload from device', icon: 'upload', onClick: () => $('#file', root).click() },
+      { label: 'Choose from library', icon: 'image', onClick: pickFromLibrary },
+    ]);
+  }
+
+  $('#sources', root)?.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-src]'); if (!b) return;
+    $$('#sources .chip', root).forEach((c) => c.classList.toggle('on', c === b));
+    if (b.dataset.src !== 'manual' && state.storage === 'none') return toast(NEEDS_BLOB, 'bad');
+    if (b.dataset.src === 'drive') busy(b, fromDrive)();
+    if (b.dataset.src === 'clip') busy(b, fromClip)();
+    if (b.dataset.src === 'image') fromImage();
+    if (b.dataset.src === 'manual') ta.focus();
+  });
+
+  // ---------- grammar
+  /** Apply a proofread result to the editor, if it was accepted. */
+  async function applyProof(res) {
+    const { showProof } = await import('../proof.js');
+    const fixed = await showProof(res);
+    if (fixed == null) return;
+    s.text = fixed; ta.value = fixed; update(); toast('Applied', 'ok');
+  }
+  $('#proof', root).onclick = busy($('#proof', root), async () => {
+    const { checkGrammar } = await import('../proof.js');
+    await applyProof(await checkGrammar(s.text));
+  });
 
   // ---------- snippets
   function insertAtCursor(txt) {

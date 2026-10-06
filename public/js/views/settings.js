@@ -1,5 +1,6 @@
 import { $, $$, api, state, refresh, esc, icon, fmt, toast, modal, busy, confirmBox, copyBox, avatar } from '../core.js';
 import { appSetup } from './accounts.js';
+import { setupHtml as driveSetupHtml } from './drive.js';
 
 const SECTIONS = [['general', 'General'], ['schedule', 'Scheduling'], ['integrations', 'Developer apps'], ['ai', 'AI assistant'], ['assistant', 'Assistant access'], ['tracking', 'Link tracking'], ['security', 'Password'], ['team', 'Users'], ['data', 'Backup & data']];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -83,8 +84,25 @@ export async function render(root, qs) {
       const apps = Object.values(state.connectors).filter((c) => c.app);
       return [`<div class="card card-pad form" style="max-width:none"><h2>Developer apps</h2>
         <p class="text-2">X, LinkedIn, Facebook/Instagram and Threads only allow posting through an app you register with them (free, a few minutes, once). Bluesky, Mastodon, Telegram and Discord need nothing here.</p>
-        <div class="list" style="margin:0 -20px">${apps.map((c) => { const a = state.settings.apps[c.id]; return `<div class="item" style="grid-template-columns:minmax(0,1fr) auto"><div><b>${esc(c.label)}</b> ${a.configured ? '<span class="badge ok">Ready</span>' : '<span class="badge draft">Not set up</span>'}<div class="muted small" style="margin-top:4px">Redirect URL: <code>${esc(a.redirectUri)}</code></div></div><button class="btn sm" data-app="${c.id}">${a.configured ? 'Edit' : 'Set up'}</button></div>`; }).join('')}</div></div>`,
-      () => { $('#sbody').onclick = async (e) => { const b = e.target.closest('[data-app]'); if (b && await appSetup(b.dataset.app)) { toast('Saved — now connect accounts from the Accounts page', 'ok'); draw(); } }; }];
+        <div class="list" style="margin:0 -20px">${apps.map((c) => { const a = state.settings.apps[c.id]; return `<div class="item" style="grid-template-columns:minmax(0,1fr) auto"><div><b>${esc(c.label)}</b> ${a.configured ? '<span class="badge ok">Ready</span>' : '<span class="badge draft">Not set up</span>'}<div class="muted small" style="margin-top:4px">Redirect URL: <code>${esc(a.redirectUri)}</code></div></div><button class="btn sm" data-app="${c.id}">${a.configured ? 'Edit' : 'Set up'}</button></div>`; }).join('')}</div></div>
+      <div class="card card-pad form" style="max-width:none"><h2>${icon('download')} Google Drive</h2>
+        <p class="text-2">Import clips from a Drive folder, each with its description from the text file of the same name. Reading uses a Google API key and a folder shared as “anyone with the link” — free, and no login to keep alive.</p>
+        <label class="field">Google API key <span class="hint">stored encrypted, never sent to your browser</span>
+          <input type="password" id="dkey" placeholder="${state.settings.drive?.hasKey ? '•••••••• (saved)' : 'AIza…'}" autocomplete="off"></label>
+        <label class="check"><span class="switch"><input type="checkbox" id="dauto" ${state.settings.drive?.autoGrammar ? 'checked' : ''}><span></span></span>
+          Check the grammar of each imported description automatically</label>
+        <p class="hint">You always see the suggested fixes and decide whether to use them. Needs an AI key under “AI assistant”.</p>
+        <div class="row"><button class="btn primary" id="saveDrive">Save</button>${state.settings.drive?.hasKey ? `<button class="btn ghost danger" id="rmDrive">Remove key</button>` : ''}</div>
+        <details style="margin-top:6px"><summary class="small text-2" style="cursor:pointer">How to get the key</summary>${driveSetupHtml()}</details>
+      </div>`,
+      () => {
+        $('#sbody').onclick = async (e) => { const b = e.target.closest('[data-app]'); if (b && await appSetup(b.dataset.app)) { toast('Saved — now connect accounts from the Accounts page', 'ok'); draw(); } };
+        $('#saveDrive').onclick = busy($('#saveDrive'), async () => {
+          await save({ drive: { apiKey: $('#dkey').value || undefined, autoGrammar: $('#dauto').checked } });
+          draw();
+        });
+        $('#rmDrive')?.addEventListener('click', busy($('#rmDrive'), async () => { await save({ drive: { apiKey: null } }, 'Key removed'); draw(); }));
+      }];
     },
     async ai() {
       const ai = state.settings.ai;

@@ -64,6 +64,11 @@ export function createSettings(db, vault) {
         effectiveUrl: base,
         alertsAccountId: await s.get(uid, 'alertsAccountId'),
         agentCanPublish: !!(await s.get(uid, 'agentCanPublish')),
+        drive: {
+          // The key itself never leaves the server; the UI only needs to know whether one is set.
+          hasKey: !!(await s.get(uid, 'driveApiKey')),
+          autoGrammar: !!(await s.get(uid, 'driveAutoGrammar')),
+        },
         utm: await s.get(uid, 'utm', { enabled: false, source: '{network}', medium: 'social', campaign: '' }),
         ai: {
           provider: AI_PROVIDERS[ai.provider] ? ai.provider : 'gemini',
@@ -84,6 +89,14 @@ export function createSettings(db, vault) {
       }
       if ('alertsAccountId' in patch) await s.set(uid, 'alertsAccountId', patch.alertsAccountId ? Number(patch.alertsAccountId) : null);
       if ('agentCanPublish' in patch) await s.set(uid, 'agentCanPublish', !!patch.agentCanPublish);
+      if (patch.drive) {
+        if ('apiKey' in patch.drive) {
+          const k = patch.drive.apiKey;
+          if (k === null || k === '') await s.set(uid, 'driveApiKey', null);
+          else if (!String(k).startsWith('••')) await s.set(uid, 'driveApiKey', String(k).trim());
+        }
+        if ('autoGrammar' in patch.drive) await s.set(uid, 'driveAutoGrammar', !!patch.drive.autoGrammar);
+      }
       if (patch.utm) {
         const u = patch.utm;
         await s.set(uid, 'utm', { enabled: !!u.enabled, source: String(u.source ?? '').slice(0, 100), medium: String(u.medium ?? '').slice(0, 100), campaign: String(u.campaign ?? '').slice(0, 100) });

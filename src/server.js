@@ -13,6 +13,7 @@ import { createOAuth } from './oauth.js';
 import { createMcp } from './mcp.js';
 import { createEvents, KINDS } from './events.js';
 import { createAgent } from './agent.js';
+import { createDrive } from './drive.js';
 import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
@@ -44,15 +45,16 @@ export async function createContext(db, opts = {}) {
   const svc = serviceAs('you');
   const analytics = createAnalytics(svc);
   const ai = createAI(svc.settings);
+  const drive = createDrive({ settings: svc.settings, media: svc.media, events });
   return {
-    db, svc, serviceAs, events, analytics, ai,
+    db, svc, serviceAs, events, analytics, ai, drive,
     auth: createAuth(db, opts), feeds: createFeeds(serviceAs('rss')), oauth: createOAuth(svc),
     mcp: createMcp({ svc: serviceAs('assistant'), analytics, db }),
     agent: createAgent({ serviceAs, analytics, settings: svc.settings }),
   };
 }
 
-function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agent }) {
+function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agent, drive }) {
   const routes = [];
   const r = (method, pattern, handler, opts = {}) => {
     const keys = [];
@@ -149,6 +151,22 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
   r('POST', '/api/agent', ({ uid, body }) => agent.chat(uid, body));
   r('GET', '/api/ai/models', ({ uid }) => ai.models(uid));
   r('POST', '/api/ai', ({ uid, body }) => ai.assist(uid, body));
+  r('POST', '/api/ai/grammar', ({ uid, body }) => ai.grammar(uid, body.text));
+
+  // Google Drive: paste a folder link, see each video with the description file beside it.
+  r('GET', '/api/drive', ({ uid, query }) => drive.list(uid, query.get('link')));
+  r('POST', '/api/drive/import', async ({ uid, body }) => {
+    const out = await drive.import(uid, { fileId: body.fileId, textId: body.textId, baseUrl: await svc.settings.baseUrl(uid) });
+    // Proofreading the imported description is opt-in, and never blocks the import.
+    if (out.description && await svc.settings.get(uid, 'driveAutoGrammar')) {
+      try {
+        const check = await ai.grammar(uid, out.description);
+        out.grammar = check;
+        if (check.changed) await events.add(uid, 'drive', `Proofread the description from Drive (${check.changes.length} fix${check.changes.length === 1 ? '' : 'es'})`, { actor: 'agent', detail: { changes: check.changes } });
+      } catch (e) { out.grammarError = e.message; }
+    }
+    return out;
+  }, { status: 201 });
   return routes;
 }
 
@@ -251,7 +269,10 @@ export function createHandler(ctxOrFactory) {
           const params = Object.fromEntries(rt.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
           const out = await rt.handler({ req, me, uid: me?.id, body, params, query: url.searchParams });
           if (rt.download) return send(200, typeof out === 'string' ? out : JSON.stringify(out, null, 2), rt.type || 'application/json; charset=utf-8', { 'content-disposition': `attachment; filename="${rt.download}"` });
-          return send(rt.status || 200, out === undefined || out?.changes !== undefined ? { ok: true } : out);
+          // A bare database result (SQLite/Postgres return a numeric `changes`) is not an answer;
+          // anything else, including a result with a list of changes of its own, is sent as-is.
+          const bare = out === undefined || typeof out?.changes === 'number';
+          return send(rt.status || 200, bare ? { ok: true } : out);
         }
         return send(404, { error: 'not found' });
       }

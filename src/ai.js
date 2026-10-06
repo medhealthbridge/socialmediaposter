@@ -36,6 +36,29 @@ Return exactly 3 distinct options.`;
 const SCHEMA = { type: 'object', properties: { options: { type: 'array', items: { type: 'string' } } }, required: ['options'], additionalProperties: false };
 const GEMINI_SCHEMA = { type: 'OBJECT', properties: { options: { type: 'ARRAY', items: { type: 'STRING' } } }, required: ['options'] };
 
+// Proofreading is a different job from writing: one corrected version, plus what changed and why.
+const PROOF_SYSTEM = `You are a careful proofreader for social media posts.
+Fix spelling, grammar, punctuation and obvious typos. Do not rewrite, reword, shorten, translate or restyle anything.
+Keep the author's voice, slang, emoji, line breaks, hashtags, @mentions, links and facts exactly as they are.
+If a sentence is already correct, leave it alone. If nothing needs fixing, return the text unchanged and an empty list of changes.
+List each fix separately, quoting only the few words that changed.`;
+const PROOF_SCHEMA = {
+  type: 'object',
+  properties: {
+    corrected: { type: 'string' },
+    changes: { type: 'array', items: { type: 'object', properties: { before: { type: 'string' }, after: { type: 'string' }, why: { type: 'string' } }, required: ['before', 'after', 'why'], additionalProperties: false } },
+  },
+  required: ['corrected', 'changes'], additionalProperties: false,
+};
+const GEMINI_PROOF_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    corrected: { type: 'STRING' },
+    changes: { type: 'ARRAY', items: { type: 'OBJECT', properties: { before: { type: 'STRING' }, after: { type: 'STRING' }, why: { type: 'STRING' } }, required: ['before', 'after', 'why'] } },
+  },
+  required: ['corrected', 'changes'],
+};
+
 function buildPrompt({ action, text, networks, tone, instruction }) {
   const nets = networks.map((id) => providers[id]).filter(Boolean);
   const limit = nets.length ? Math.min(...nets.map((p) => p.limit)) : 500;
@@ -75,18 +98,18 @@ function parseOptions(raw) {
 // Both shapes are tried, newest-known-good first, so this keeps working either way.
 const SHAPES = ['responseSchema', 'responseFormat'];
 let geminiShape = null;
-const generationConfig = (shape) => (shape === 'responseFormat'
-  ? { responseFormat: { mimeType: 'application/json', schema: GEMINI_SCHEMA }, maxOutputTokens: 8192 }
-  : { responseMimeType: 'application/json', responseSchema: GEMINI_SCHEMA, maxOutputTokens: 8192 });
+const generationConfig = (shape, schema) => (shape === 'responseFormat'
+  ? { responseFormat: { mimeType: 'application/json', schema }, maxOutputTokens: 8192 }
+  : { responseMimeType: 'application/json', responseSchema: schema, maxOutputTokens: 8192 });
 const rejectedShape = (e) => e.status === 400 && /unknown name|invalid json payload|response_?schema|response_?mime_?type|response_?format/i.test(e.message);
 
-async function askGemini({ apiKey, model, prompt }) {
+async function askGemini({ apiKey, model, prompt, system = SYSTEM, schema = GEMINI_SCHEMA }) {
   const send = (shape) => request(`${endpoints.gemini}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     headers: { 'x-goog-api-key': apiKey },
     json: {
-      systemInstruction: { parts: [{ text: SYSTEM }] },
+      systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: generationConfig(shape),
+      generationConfig: generationConfig(shape, schema),
     },
     timeout: 90_000,
   });
@@ -111,12 +134,12 @@ async function askGemini({ apiKey, model, prompt }) {
   return { text, model: data.modelVersion || model };
 }
 
-async function askClaude({ apiKey, model, prompt }) {
+async function askClaude({ apiKey, model, prompt, system = SYSTEM, schema = SCHEMA }) {
   const client = new Anthropic({ apiKey, maxRetries: 2, timeout: 90_000 });
   const params = {
-    model, max_tokens: 4000, system: SYSTEM,
+    model, max_tokens: 4000, system,
     messages: [{ role: 'user', content: prompt }],
-    output_config: { format: { type: 'json_schema', schema: SCHEMA }, ...(!/haiku/.test(model) && { effort: 'low' }) },
+    output_config: { format: { type: 'json_schema', schema }, ...(!/haiku/.test(model) && { effort: 'low' }) },
   };
   const res = /^claude-(opus-5|sonnet-5-5|fable)/.test(model)
     // Server-side fallback: if the model declines, the API retries on a suitable fallback model.
@@ -134,7 +157,7 @@ export function createAI(settings) {
     return { provider, spec, model: ai.model || spec.defaultModel, apiKey: ai[spec.keyField] };
   };
 
-  return {
+  const ai = {
     providers: AI_PROVIDERS,
 
     /** Models this key can use. Gemini is asked directly, so the list is always current. */
@@ -152,15 +175,15 @@ export function createAI(settings) {
       return models;
     },
 
-    async assist(uid, body) {
+    /** One round-trip to whichever provider is configured, with Google's errors made readable. */
+    async ask(uid, { prompt, system, schema, geminiSchema }) {
       const { provider, spec, model, apiKey } = await conf(uid);
       if (!apiKey) throw httpError(400, `Add your ${spec.label} API key in Settings → AI assistant first`);
-      if (!body.text?.trim() && !body.instruction?.trim()) throw httpError(400, 'Write a few words or a topic first');
-      const prompt = buildPrompt({ ...body, networks: body.networks || [] });
-
-      let out;
       try {
-        out = provider === 'gemini' ? await askGemini({ apiKey, model, prompt }) : await askClaude({ apiKey, model, prompt });
+        const out = provider === 'gemini'
+          ? await askGemini({ apiKey, model, prompt, system, schema: geminiSchema })
+          : await askClaude({ apiKey, model, prompt, system, schema });
+        return { ...out, provider };
       } catch (e) {
         if (e.status === 401 || e.status === 403 || /api key not valid|invalid x-goog-api-key|authentication/i.test(e.message)) {
           throw httpError(400, `Your ${spec.label} API key was rejected — check it in Settings → AI assistant`);
@@ -172,10 +195,40 @@ export function createAI(settings) {
         if (e.status) throw e;
         throw httpError(502, `AI error: ${e.message}`);
       }
+    },
 
+    async assist(uid, body) {
+      if (!body.text?.trim() && !body.instruction?.trim()) throw httpError(400, 'Write a few words or a topic first');
+      const prompt = buildPrompt({ ...body, networks: body.networks || [] });
+      const out = await ai.ask(uid, { prompt });
       const options = parseOptions(out.text);
       if (!options.length) throw httpError(502, 'The AI returned an unexpected answer, please try again');
-      return { options: options.slice(0, 5), model: out.model, provider };
+      return { options: options.slice(0, 5), model: out.model, provider: out.provider };
+    },
+
+    /**
+     * Proofread one piece of text. Returns the corrected version and what changed, so the
+     * person can see each fix before accepting it — nothing is ever changed behind their back.
+     */
+    async grammar(uid, text) {
+      const original = String(text ?? '');
+      if (!original.trim()) throw httpError(400, 'There is nothing to check yet');
+      if (original.length > 20_000) throw httpError(400, 'That text is too long to check in one go');
+      const out = await ai.ask(uid, {
+        prompt: `Proofread this post. Return the corrected text and a list of what you changed.\n\n"""\n${original}\n"""`,
+        system: PROOF_SYSTEM, schema: PROOF_SCHEMA, geminiSchema: GEMINI_PROOF_SCHEMA,
+      });
+      let parsed;
+      try { parsed = JSON.parse(out.text.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, '').trim()); }
+      catch { throw httpError(502, 'The AI returned an unexpected answer, please try again'); }
+      const corrected = typeof parsed?.corrected === 'string' ? parsed.corrected : original;
+      const clean = corrected.trim() === original.trim() ? original : corrected;
+      const changes = (Array.isArray(parsed?.changes) ? parsed.changes : [])
+        .filter((c) => c && typeof c.before === 'string' && typeof c.after === 'string' && c.before !== c.after)
+        .slice(0, 25)
+        .map((c) => ({ before: String(c.before).slice(0, 200), after: String(c.after).slice(0, 200), why: String(c.why || '').slice(0, 200) }));
+      return { original, corrected: clean, changed: clean !== original, changes, model: out.model, provider: out.provider };
     },
   };
+  return ai;
 }

@@ -15,6 +15,7 @@ export const KINDS = {
   account: { label: 'Account', icon: 'users' },
   cron: { label: 'Timer', icon: 'retry' },
   rss: { label: 'RSS', icon: 'rss' },
+  drive: { label: 'Drive', icon: 'download' },
   ai: { label: 'AI', icon: 'sparkle' },
   agent: { label: 'Agent', icon: 'sparkle' },
   settings: { label: 'Settings', icon: 'settings' },
