@@ -97,15 +97,21 @@ async function route() {
   const main = $('#main');
   const token = Symbol();
   route.token = token;
+  // Each view gets its own box to draw in, and leaving a view takes the box away with it.
+  // A request that was already in flight then writes into something nobody can see, instead
+  // of into whatever happens to be on screen by the time it comes back.
+  const host = document.createElement('div');
   try {
     const mod = await VIEWS[key].load();
     if (route.token !== token) return;
-    main.innerHTML = '';
-    current = (await mod.render(main, params())) || null;
+    main.replaceChildren(host);
+    current = (await mod.render(host, params())) || null;
+    if (route.token !== token) return;
     document.title = `${VIEWS[key].label} · Social Poster`;
   } catch (e) {
+    if (route.token !== token) return;   // we have already moved on; the error is stale too
     console.error(e);
-    main.innerHTML = `<div class="page"><div class="card card-pad"><h2>Something went wrong</h2><p class="text-2">${esc(e.message)}</p></div></div>`;
+    host.innerHTML = `<div class="page"><div class="card card-pad"><h2>Something went wrong</h2><p class="text-2">${esc(e.message)}</p></div></div>`;
   }
 }
 

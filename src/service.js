@@ -53,6 +53,18 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     if (!a) throw httpError(404, 'account not found');
     return a;
   };
+  /**
+   * Every attached file must be one of yours — including the ones on thread parts.
+   * Publishing checks this again, but a post that can never go out should not be saved
+   * in the first place.
+   */
+  const ownedMedia = async (uid, c) => {
+    const ids = [...new Set([...(c.media || []), ...(c.parts || []).flatMap((x) => x.media || [])])];
+    if (!ids.length) return;
+    const found = await db.all(`SELECT id FROM media WHERE user_id=? AND id IN ${inList(ids)}`, uid, ...ids);
+    const missing = ids.filter((id) => !found.some((r) => r.id === id));
+    if (missing.length) throw httpError(404, `attached media #${missing[0]} does not exist`);
+  };
 
   /** Attach deliveries and media to posts with two queries (not one per post). */
   async function hydrate(uid, posts) {
@@ -306,6 +318,7 @@ const whenFrom = (body, slot) => {
       const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, parts: n.parts ?? [], recycleDays: n.recycleDays, recycleLeft: n.recycleLeft };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
+      await ownedMedia(uid, c);
       if (body.useSlot && !(await svc.getSlots(uid)).length) throw httpError(400, 'No posting times set yet — add some in Settings → Scheduling');
       const when = whenFrom(body, await svc.nextSlot(uid));
       if (body.useSlot && !when) throw httpError(400, 'No free posting time in the next two months — add more times');
@@ -332,6 +345,7 @@ const whenFrom = (body, slot) => {
       };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
+      await ownedMedia(uid, c);
       // 'scheduledAt: null' moves it back to the queue; leaving it out keeps the current time.
       const reschedule = body.publishNow ? null
         : body.useSlot ? await svc.nextSlot(uid)

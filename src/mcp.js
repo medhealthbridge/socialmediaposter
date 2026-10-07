@@ -29,7 +29,10 @@ export function createKeys(settings) {
       return { ...key, hash: undefined, secret }; // shown once
     },
     async remove(uid, id) {
-      await settings.set(uid, 'mcpKeys', (await settings.get(uid, 'mcpKeys', [])).filter((k) => k.id !== id));
+      const keys = await settings.get(uid, 'mcpKeys', []);
+      const left = keys.filter((k) => k.id !== id);
+      await settings.set(uid, 'mcpKeys', left);
+      return { changes: keys.length - left.length };
     },
   };
 }

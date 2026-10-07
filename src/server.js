@@ -61,7 +61,16 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
     routes.push({ method, re, keys, handler, ...opts });
   };
-  const id = (p) => Number(p.id);
+  /**
+   * The id out of a path like /api/posts/12. Anything that is not a whole number never
+   * reaches the database: Postgres rejects NaN outright, which would turn a typo in a URL
+   * into a 500 rather than a plain "not found".
+   */
+  const id = (p) => {
+    const n = Number(p.id);
+    if (!Number.isSafeInteger(n) || n < 1) throw httpError(404, 'not found');
+    return n;
+  };
 
   r('GET', '/api/auth/status', async ({ me }) => ({ needsSetup: (await auth.userCount()) === 0, user: me }), { public: true });
 
@@ -269,6 +278,9 @@ export function createHandler(ctxOrFactory) {
           const params = Object.fromEntries(rt.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
           const out = await rt.handler({ req, me, uid: me?.id, body, params, query: url.searchParams });
           if (rt.download) return send(200, typeof out === 'string' ? out : JSON.stringify(out, null, 2), rt.type || 'application/json; charset=utf-8', { 'content-disposition': `attachment; filename="${rt.download}"` });
+          // Deleting something by id that was not yours, or was never there, removes no rows.
+          // Saying "ok" to that would be a lie, and would have the UI report a success.
+          if (req.method === 'DELETE' && rt.keys.length && out?.changes === 0) return send(404, { error: 'not found' });
           // A bare database result (SQLite/Postgres return a numeric `changes`) is not an answer;
           // anything else, including a result with a list of changes of its own, is sent as-is.
           const bare = out === undefined || typeof out?.changes === 'number';

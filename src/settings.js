@@ -87,7 +87,13 @@ export function createSettings(db, vault) {
         }
         await s.set(uid, 'publicUrl', u || null);
       }
-      if ('alertsAccountId' in patch) await s.set(uid, 'alertsAccountId', patch.alertsAccountId ? Number(patch.alertsAccountId) : null);
+      if ('alertsAccountId' in patch) {
+        const aid = patch.alertsAccountId ? Number(patch.alertsAccountId) : null;
+        // Sending alerts re-checks this anyway, so a stray id is harmless — but saving one
+        // would quietly give you an alert setting that never fires.
+        if (aid && !(await db.get('SELECT 1 FROM accounts WHERE id=? AND user_id=?', aid, uid))) throw httpError(404, 'account not found');
+        await s.set(uid, 'alertsAccountId', aid);
+      }
       if ('agentCanPublish' in patch) await s.set(uid, 'agentCanPublish', !!patch.agentCanPublish);
       if (patch.drive) {
         if ('apiKey' in patch.drive) {

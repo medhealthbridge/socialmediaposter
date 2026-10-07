@@ -175,10 +175,11 @@ export function createMedia(db, { dir = process.env.MEDIA_DIR || 'data/media', b
     },
     async remove(uid, id) {
       const r = await db.get('SELECT * FROM media WHERE id=? AND user_id=?', id, uid);
-      if (!r) return;
+      if (!r) return { changes: 0 };
       await db.run('DELETE FROM media WHERE id=?', id);
       if (r.url) await (await blob()).del(r.url, { token: blobToken }).catch(() => {});
       else await unlink(file(r)).catch(() => {});
+      return { changes: 1 };
     },
     /** Media objects handed to network providers. */
     async resolve(uid, ids, baseUrl) {
