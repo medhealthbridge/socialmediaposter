@@ -51,7 +51,10 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     const seen = new Map(known.map((g) => [g.toLowerCase(), g]));
     const out = [];
     for (const raw of Array.isArray(list) ? list : []) {
-      const name = String(raw ?? '').trim().replace(/\s+/g, ' ').slice(0, 40);
+      // Only something that is already a word or a number can be a name; an object would
+      // otherwise be stored as the group "[object Object]".
+      if (typeof raw !== 'string' && typeof raw !== 'number') continue;
+      const name = String(raw).trim().replace(/\s+/g, ' ').slice(0, 40);
       if (!name) continue;
       const key = name.toLowerCase();
       const canonical = seen.get(key) ?? name;

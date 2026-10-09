@@ -410,3 +410,55 @@ test('T-GRP-01 groups gather accounts across networks, and stay one person’s o
   assert.equal((await call('/api/groups/Animals', { method: 'PUT', cookie: other.cookie, body: { name: 'Hijacked' } })).json.changed, 0);
   assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Family'], 'still ours, still intact');
 });
+
+test('T-GRP-02 group names are tidied, capped and never split a category in two', async () => {
+  const { call } = await boot();
+  const me = await call('/api/auth/signup', { method: 'POST', body: { email: 'owner@x.io', password: 'ownerpass1' } });
+  const cookie = me.cookie;
+  const mk = async (name) => (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'mock', name, config: {} } })).json;
+  const setGroups = (id, groups) => call(`/api/accounts/${id}`, { method: 'PATCH', cookie, body: { groups } });
+  const a = await mk('One');
+  const b = await mk('Two');
+
+  // Junk in the list is dropped rather than stored or crashing.
+  const messy = await setGroups(a.id, ['  Animals  ', '', '   ', null, 123, { evil: 1 }, ['nested'], 'Animals', 'ANIMALS']);
+  assert.equal(messy.status, 200);
+  assert.deepEqual(messy.json.groups, ['Animals', '123'], 'blanks and objects dropped, a number kept as its text, duplicates merged');
+
+  // Inner whitespace is collapsed, so "Kids   Shows" and "Kids Shows" are one group.
+  await setGroups(a.id, ['Kids   Shows']);
+  await setGroups(b.id, ['Kids Shows']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Kids Shows'], 'one group, not two');
+
+  // Long names are cut to a sane length rather than rejected.
+  const long = await setGroups(a.id, ['x'.repeat(200)]);
+  assert.equal(long.json.groups[0].length, 40, 'capped at 40 characters');
+
+  // An account can be in many groups, but not unbounded.
+  const many = await setGroups(a.id, Array.from({ length: 50 }, (_, i) => `g${i}`));
+  assert.equal(many.json.groups.length, 20, 'capped at 20 groups per account');
+
+  // Renaming onto a name that already exists merges rather than duplicating.
+  await setGroups(a.id, ['Animals']);
+  await setGroups(b.id, ['Animals', 'Kids']);
+  assert.equal((await call('/api/groups/Kids', { method: 'PUT', cookie, body: { name: 'Animals' } })).json.changed, 1);
+  const after = (await call('/api/accounts', { cookie })).json.find((x) => x.id === b.id);
+  assert.deepEqual(after.groups, ['Animals'], 'merged into one entry, not listed twice');
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Animals']);
+
+  // Renaming something that is not a group changes nothing and is not an error.
+  assert.equal((await call('/api/groups/Nope', { method: 'PUT', cookie, body: { name: 'Something' } })).json.changed, 0);
+
+  // A group exists only while an account is in it.
+  await call(`/api/accounts/${a.id}`, { method: 'DELETE', cookie });
+  await setGroups(b.id, []);
+  assert.deepEqual((await call('/api/groups', { cookie })).json, [], 'the last member leaving removes the group');
+  assert.equal((await call('/api/accounts', { cookie })).json.length, 1, 'and the account itself is untouched');
+
+  // Nonsense in place of a list is refused, not stored.
+  for (const bad of ['Animals', 42, { a: 1 }, null]) {
+    const r = await setGroups(b.id, bad);
+    assert.ok(r.status < 500, `groups: ${JSON.stringify(bad)} -> ${r.status}`);
+    if (r.status === 200) assert.deepEqual(r.json.groups, [], `groups: ${JSON.stringify(bad)} stored nothing`);
+  }
+});

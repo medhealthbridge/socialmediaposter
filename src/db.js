@@ -58,13 +58,22 @@ const schema = (pg) => {
   CREATE TABLE IF NOT EXISTS oauth_states (
     state TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, connector TEXT NOT NULL,
     verifier TEXT NOT NULL, redirect_uri TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT ${now});
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_name ON accounts(user_id, name);
-  CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id, status);
-  CREATE INDEX IF NOT EXISTS idx_posts_due ON posts(status, scheduled_at);
-  CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id);
-  CREATE INDEX IF NOT EXISTS idx_deliveries_post ON deliveries(post_id);
-  CREATE INDEX IF NOT EXISTS idx_deliveries_account ON deliveries(account_id, status);`;
+`;
 };
+
+/**
+ * Indexes are kept apart from the tables because they name columns that an older database
+ * may not have yet. The order on every backend is: tables, then any missing columns, then
+ * these — otherwise an index over a column added later cannot be built.
+ */
+const INDEXES = [
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_name ON accounts(user_id, name)',
+  'CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id, status)',
+  'CREATE INDEX IF NOT EXISTS idx_posts_due ON posts(status, scheduled_at)',
+  'CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, id)',
+  'CREATE INDEX IF NOT EXISTS idx_deliveries_post ON deliveries(post_id)',
+  'CREATE INDEX IF NOT EXISTS idx_deliveries_account ON deliveries(account_id, status)',
+];
 
 /**
  * Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing table
@@ -101,6 +110,12 @@ async function openSqlite(path) {
     if (cols('feeds').size) db.exec("UPDATE feeds SET mode='queue' WHERE mode='draft'");
   }
   db.exec(schema(false));
+  // A table that already existed is left as it was above, so top it up before indexing it.
+  for (const [t, defs] of Object.entries(LATER)) {
+    const have = cols(t);
+    for (const [c, type] of Object.entries(defs)) if (have.size && !have.has(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
+  }
+  for (const sql of INDEXES) db.exec(sql);
   return {
     kind: 'sqlite',
     all: async (sql, ...a) => db.prepare(sql).all(...clean(a)).map((r) => ({ ...r })),
@@ -133,6 +148,7 @@ async function openPostgres(url) {
         await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} ${type}`);
       }
     }
+    for (const sql of INDEXES) await client.query(sql);
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
