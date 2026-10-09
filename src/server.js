@@ -82,7 +82,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
       user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind, eventKinds: KINDS,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
       mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
-      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid), agentTools: agent.tools,
+      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid), agentTools: agent.tools, groups: await svc.listGroups(uid),
     };
   });
 
@@ -101,7 +101,16 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
 
   r('GET', '/api/accounts', ({ uid }) => svc.listAccounts(uid));
   r('POST', '/api/accounts', ({ uid, body }) => svc.addAccount(uid, body), { status: 201 });
-  r('PATCH', '/api/accounts/:id', ({ uid, params, body }) => svc.renameAccount(uid, id(params), body.name));
+  r('PATCH', '/api/accounts/:id', async ({ uid, params, body }) => {
+    let acc = null;
+    if (body.name !== undefined) acc = await svc.renameAccount(uid, id(params), body.name);
+    if (body.groups !== undefined) acc = await svc.setAccountGroups(uid, id(params), body.groups);
+    if (!acc) throw httpError(400, 'nothing to change');
+    return acc;
+  });
+  r('GET', '/api/groups', ({ uid }) => svc.listGroups(uid));
+  r('PUT', '/api/groups/:name', ({ uid, params, body }) => svc.renameGroup(uid, params.name, body.name));
+  r('DELETE', '/api/groups/:name', ({ uid, params }) => svc.renameGroup(uid, params.name, ''));
   r('DELETE', '/api/accounts/:id', ({ uid, params }) => svc.deleteAccount(uid, id(params)));
   r('POST', '/api/accounts/:id/check', ({ uid, params }) => svc.checkAccount(uid, id(params)));
   r('POST', '/api/accounts/:id/test-post', ({ uid, params }) => svc.testPost(uid, id(params)));

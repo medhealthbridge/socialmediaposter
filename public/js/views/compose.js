@@ -41,6 +41,7 @@ export async function render(root, params) {
       <div class="col gap-lg">
         <section class="card card-pad col">
           <div class="row"><h3>Post to</h3><span class="muted small" id="selCount"></span><a class="small right" href="#/accounts">${icon('plus', '')} Connect accounts</a></div>
+          <div class="row" id="groups"></div>
           <div class="row" id="accs"></div>
         </section>
 
@@ -116,6 +117,34 @@ export async function render(root, params) {
   }, 400);
 
   // ---------- accounts
+  /**
+   * With a dozen accounts, picking four of them one by one is the slow part. Group chips
+   * take the whole category in one click: on if every account in it is selected, half-lit
+   * if only some are.
+   */
+  function renderGroups() {
+    const box = $('#groups', root);
+    const groups = state.groups || [];
+    if (!groups.length) { box.innerHTML = ''; box.hidden = true; return; }
+    box.hidden = false;
+    const members = (g) => state.accounts.filter((a) => a.groups?.includes(g));
+    box.innerHTML = `<span class="muted small" style="margin-right:2px">Groups</span>`
+      + groups.map((g) => {
+        const mine = members(g);
+        const on = mine.length && mine.every((a) => s.accountIds.has(a.id));
+        const some = !on && mine.some((a) => s.accountIds.has(a.id));
+        return `<button type="button" class="chip plain ${on ? 'on' : ''} ${some ? 'part' : ''}" data-g="${esc(g)}"
+          data-tip="${esc(`${mine.length} account${mine.length === 1 ? '' : 's'}: ${mine.map((a) => a.name).join(', ')}`)}">${esc(g)}<span class="n">${mine.length}</span></button>`;
+      }).join('');
+  }
+  $('#groups', root).onclick = (e) => {
+    const b = e.target.closest('[data-g]'); if (!b) return;
+    const mine = state.accounts.filter((a) => a.groups?.includes(b.dataset.g));
+    const allOn = mine.every((a) => s.accountIds.has(a.id));
+    for (const a of mine) allOn ? s.accountIds.delete(a.id) : s.accountIds.add(a.id);
+    renderGroups(); renderAccounts(); renderOverrides(); renderParts(); update();
+  };
+
   function renderAccounts() {
     const accs = state.accounts;
     $('#accs', root).innerHTML = accs.length
@@ -127,7 +156,7 @@ export async function render(root, params) {
   $('#accs', root).onclick = (e) => {
     if (e.target.closest('#all')) { s.accountIds = s.accountIds.size === state.accounts.length ? new Set() : new Set(state.accounts.map((a) => a.id)); }
     else { const c = e.target.closest('.chip'); if (!c) return; const id = Number(c.dataset.id); s.accountIds.has(id) ? s.accountIds.delete(id) : s.accountIds.add(id); }
-    renderAccounts(); renderOverrides(); renderParts(); update();
+    renderGroups(); renderAccounts(); renderOverrides(); renderParts(); update();
   };
 
   // ---------- counters, previews, problems
@@ -528,6 +557,6 @@ export async function render(root, params) {
   $('#dup', root)?.addEventListener('click', async (e) => { e.preventDefault(); const d = await api(`/posts/${s.id}/duplicate`, { method: 'POST' }); go(`#/compose?id=${d.id}`); });
   if (readOnly) $$('textarea, input, .seg button, #submit, .tools .btn', root).forEach((el) => { el.disabled = true; });
 
-  renderAccounts(); renderThumbs(); renderParts(); renderOverrides(); renderWhen(); update();
+  renderGroups(); renderAccounts(); renderThumbs(); renderParts(); renderOverrides(); renderWhen(); update();
   if (!readOnly) ta.focus();
 }

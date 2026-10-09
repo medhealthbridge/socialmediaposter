@@ -362,3 +362,51 @@ test('T-VAL-01 junk input is refused cleanly, never with a crash', async () => {
   assert.equal((await call('/api/accounts', { cookie })).json.length, 1);
   assert.equal((await call('/api/bootstrap', { cookie })).json.user.is_admin, true);
 });
+
+test('T-GRP-01 groups gather accounts across networks, and stay one person’s own', async () => {
+  const { call } = await boot();
+  const me = await call('/api/auth/signup', { method: 'POST', body: { email: 'owner@x.io', password: 'ownerpass1' } });
+  const other = await call('/api/auth/signup', { method: 'POST', body: { email: 'other@x.io', password: 'otherpass1' } });
+  const cookie = me.cookie;
+
+  const made = [];
+  for (const cat of ['Animals', 'Kids', 'Adults']) {
+    // mock and webhook are the two that connect without calling out to anyone.
+    for (const net of ['mock', 'webhook', 'webhook']) {
+      const cfg = net === 'mock' ? {} : { url: `https://example.com/${cat}-${made.length}` };
+      const a = await call('/api/accounts', { method: 'POST', cookie, body: { type: net, name: `${cat} ${net} ${made.length}`, config: cfg } });
+      assert.equal(a.status, 201, `${cat} ${net}: ${a.text.slice(0, 120)}`);
+      await call(`/api/accounts/${a.json.id}`, { method: 'PATCH', cookie, body: { groups: [cat] } });
+      made.push({ cat, net, id: a.json.id });
+    }
+  }
+
+  // The group list is gathered from the accounts themselves — no separate thing to maintain.
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Kids']);
+  const accounts = (await call('/api/accounts', { cookie })).json;
+  const animals = accounts.filter((a) => a.groups.includes('Animals'));
+  assert.equal(animals.length, 3, 'one group reaches across all three networks');
+
+  // Spelling and spacing do not split a group in two.
+  const extra = (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'mock', name: 'Animals spare', config: {} } })).json;
+  const back = await call(`/api/accounts/${extra.id}`, { method: 'PATCH', cookie, body: { groups: ['  animals  ', 'ANIMALS', 'Shorts'] } });
+  assert.deepEqual(back.json.groups, ['Animals', 'Shorts'], 'matched case-insensitively, kept the first spelling, duplicate dropped');
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Kids', 'Shorts']);
+
+  // Posting to a whole group is just posting to its accounts.
+  const post = await call('/api/posts', { method: 'POST', cookie, body: { text: 'Otters holding hands', accountIds: animals.map((a) => a.id) } });
+  assert.equal(post.status, 201);
+  assert.equal(post.json.deliveries.length, 3);
+
+  // Renaming a group moves every account at once; deleting it leaves the accounts alone.
+  assert.equal((await call('/api/groups/Kids', { method: 'PUT', cookie, body: { name: 'Family' } })).json.changed, 3);
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Family', 'Shorts']);
+  assert.equal((await call('/api/groups/Shorts', { method: 'DELETE', cookie })).json.changed, 1);
+  assert.equal((await call('/api/accounts', { cookie })).json.length, 10, 'deleting a group deletes no accounts');
+
+  // None of it is visible to, or reachable by, anyone else.
+  assert.deepEqual((await call('/api/groups', { cookie: other.cookie })).json, []);
+  assert.equal((await call(`/api/accounts/${made[0].id}`, { method: 'PATCH', cookie: other.cookie, body: { groups: ['Stolen'] } })).status, 404);
+  assert.equal((await call('/api/groups/Animals', { method: 'PUT', cookie: other.cookie, body: { name: 'Hijacked' } })).json.changed, 0);
+  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Family'], 'still ours, still intact');
+});

@@ -39,9 +39,29 @@ export function createService(db, { vault = createVault(loadKey()), mediaDir, bl
     return {
       id: a.id, name: a.name, type: a.type, handle: a.handle, avatar: a.avatar, profile_url: a.profile_url,
       status: a.status, last_error: a.last_error, fields, created_at: a.created_at,
-      needs_setup: !!prov?.needsSetup?.(c),
+      groups: J(a.groups, []), needs_setup: !!prov?.needsSetup?.(c),
     };
   };
+  /**
+   * Group names are free text, so they are tidied once here: trimmed, length-capped, and
+   * matched without regard to case, so "animals", "Animals " and "ANIMALS" stay one group.
+   * The first spelling you use is the one that is kept.
+   */
+  const cleanGroups = (list, known = []) => {
+    const seen = new Map(known.map((g) => [g.toLowerCase(), g]));
+    const out = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+      const name = String(raw ?? '').trim().replace(/\s+/g, ' ').slice(0, 40);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const canonical = seen.get(key) ?? name;
+      if (!out.some((x) => x.toLowerCase() === key)) out.push(canonical);
+      seen.set(key, canonical);
+      if (out.length >= 20) break;
+    }
+    return out;
+  };
+
   const uniqueName = async (uid, base, exceptId = 0) => {
     const b = String(base || 'Account').trim().slice(0, 80) || 'Account';
     let n = b, i = 2;
@@ -117,6 +137,38 @@ const whenFrom = (body, slot) => {
 
     // ---------------- accounts
     listAccounts: async (uid) => (await db.all('SELECT * FROM accounts WHERE user_id=? ORDER BY type, name', uid)).map(accountView),
+
+    /** Every group name in use, in the order they first appear. */
+    async listGroups(uid) {
+      const out = [];
+      for (const a of await svc.listAccounts(uid)) for (const g of a.groups) if (!out.includes(g)) out.push(g);
+      return out.sort((a, b) => a.localeCompare(b));
+    },
+
+    /** Put an account into groups (or take it out of all of them). */
+    async setAccountGroups(uid, id, groups) {
+      await ownedAccount(uid, id);
+      const next = cleanGroups(groups, await svc.listGroups(uid));
+      await db.run('UPDATE accounts SET groups=? WHERE id=?', JSON.stringify(next), id);
+      const acc = accountView(await ownedAccount(uid, id));
+      await events.add(uid, 'account', next.length ? `${acc.name} is now in ${next.join(', ')}` : `${acc.name} is no longer in any group`,
+        { actor: svc.actor, accountId: id });
+      return acc;
+    },
+
+    /** Rename a group everywhere, or remove it everywhere when newName is empty. */
+    async renameGroup(uid, from, newName) {
+      const to = cleanGroups([newName])[0] || '';
+      let touched = 0;
+      for (const a of await svc.listAccounts(uid)) {
+        if (!a.groups.some((g) => g.toLowerCase() === String(from).toLowerCase())) continue;
+        const next = cleanGroups(a.groups.flatMap((g) => (g.toLowerCase() === String(from).toLowerCase() ? (to ? [to] : []) : [g])));
+        await db.run('UPDATE accounts SET groups=? WHERE id=?', JSON.stringify(next), a.id);
+        touched++;
+      }
+      await events.add(uid, 'account', to ? `Renamed group “${from}” to “${to}” on ${touched} account(s)` : `Removed group “${from}” from ${touched} account(s)`, { actor: svc.actor });
+      return { changed: touched, groups: await svc.listGroups(uid) };
+    },
 
     async addAccount(uid, { type, name, config = {} }) {
       const prov = providers[type];

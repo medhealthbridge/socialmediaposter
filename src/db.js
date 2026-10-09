@@ -24,7 +24,8 @@ const schema = (pg) => {
   CREATE TABLE IF NOT EXISTS accounts (
     id ${id}, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, type TEXT NOT NULL,
     config TEXT NOT NULL DEFAULT '{}', handle TEXT, avatar TEXT, external_id TEXT, profile_url TEXT,
-    status TEXT NOT NULL DEFAULT 'ok', last_error TEXT, created_at TEXT NOT NULL DEFAULT ${now});
+    status TEXT NOT NULL DEFAULT 'ok', last_error TEXT, groups TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT ${now});
   CREATE TABLE IF NOT EXISTS posts (
     id ${id}, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, media TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'queued', position INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
@@ -65,6 +66,21 @@ const schema = (pg) => {
   CREATE INDEX IF NOT EXISTS idx_deliveries_account ON deliveries(account_id, status);`;
 };
 
+/**
+ * Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing table
+ * alone, so a database made by an older version would silently lack these and every query
+ * naming one would fail. Both backends add whatever is missing on start-up.
+ */
+const LATER = {
+  accounts: { user_id: 'INTEGER', handle: 'TEXT', avatar: 'TEXT', external_id: 'TEXT', profile_url: 'TEXT',
+    status: "TEXT NOT NULL DEFAULT 'ok'", last_error: 'TEXT', groups: "TEXT NOT NULL DEFAULT '[]'" },
+  posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''",
+    source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT',
+    recycle_days: 'INTEGER', recycle_left: 'INTEGER', parts: "TEXT NOT NULL DEFAULT '[]'" },
+  deliveries: { text_override: 'TEXT', remote_id: 'TEXT', metrics: 'TEXT', metrics_at: 'TEXT' },
+  media: { url: 'TEXT' },
+};
+
 const clean = (args) => args.map((v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v));
 
 async function openSqlite(path) {
@@ -75,10 +91,7 @@ async function openSqlite(path) {
   // Upgrade databases created by the earlier scheduler version before applying the schema.
   const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
   if (cols('posts').size) {
-    const add = { accounts: { user_id: 'INTEGER', handle: 'TEXT', avatar: 'TEXT', external_id: 'TEXT', profile_url: 'TEXT', status: "TEXT NOT NULL DEFAULT 'ok'", last_error: 'TEXT' },
-      posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''", source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT', recycle_days: 'INTEGER', recycle_left: 'INTEGER', parts: "TEXT NOT NULL DEFAULT '[]'" },
-      deliveries: { text_override: 'TEXT', remote_id: 'TEXT', metrics: 'TEXT', metrics_at: 'TEXT' }, media: { url: 'TEXT' } };
-    for (const [t, defs] of Object.entries(add)) {
+    for (const [t, defs] of Object.entries(LATER)) {
       const have = cols(t);
       if (!have.size) continue;
       for (const [c, type] of Object.entries(defs)) if (!have.has(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
@@ -114,6 +127,12 @@ async function openPostgres(url) {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(727274)');
     await client.query(schema(true));
+    // Tables that already existed are left untouched above, so add anything they are missing.
+    for (const [t, defs] of Object.entries(LATER)) {
+      for (const [c, type] of Object.entries(defs)) {
+        await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} ${type}`);
+      }
+    }
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});

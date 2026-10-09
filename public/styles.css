@@ -279,6 +279,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .acct { display: grid; gap: 12px; padding: 16px; }
 .acct-top { display: flex; gap: 12px; align-items: center; min-width: 0; }
 .acct .err { font-size: 12px; color: var(--bad); background: var(--bad-soft); padding: 6px 10px; border-radius: 6px; word-break: break-word; }
+.tags { gap: 6px; flex-wrap: wrap; }
+.tag { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--line); }
+.chip .n { margin-left: 6px; opacity: .6; font-variant-numeric: tabular-nums; }
+/* Half-lit: some of the group is picked, not all of it. */
+.chip.part { border-color: var(--accent); color: var(--accent); background: transparent; }
+.btn.tiny { padding: 1px 7px; font-size: 11.5px; }
 .steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--text-2); }
 pre.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
 .diffs { display: grid; gap: 8px; margin: 10px 0; }

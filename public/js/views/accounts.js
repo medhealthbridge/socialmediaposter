@@ -102,6 +102,38 @@ export async function postSettings(account, after) {
 
 let rerender = () => {};
 
+/**
+ * Put one account into groups. Groups are just names you type — the ones already in use are
+ * offered so a category stays one group rather than three near-identical spellings.
+ */
+function groupDialog(acc, after) {
+  const chosen = new Set(acc.groups || []);
+  const draw = (d) => {
+    const all = [...new Set([...(state.groups || []), ...chosen])].sort((a, b) => a.localeCompare(b));
+    $('#gopts', d).innerHTML = all.length
+      ? all.map((g) => `<button type="button" class="chip plain ${chosen.has(g) ? 'on' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')
+      : '<span class="muted small">No groups yet — type one below.</span>';
+  };
+  modal({
+    title: `Groups for ${esc(acc.name)}`,
+    body: `<p class="text-2 small">Group your accounts by whatever they have in common — a topic, a brand, a language. In the composer one click then picks the whole group.</p>
+      <div class="row" id="gopts"></div>
+      <label class="field">Add a group<div class="row"><input type="text" id="gnew" class="grow" placeholder="Animals" maxlength="40"><button type="button" class="btn" id="gadd">Add</button></div></label>`,
+    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: async () => {
+      await api(`/accounts/${acc.id}`, { method: 'PATCH', body: { groups: [...chosen] } });
+      await refresh(); after(); toast('Groups saved', 'ok');
+    } }],
+    onOpen: (d) => {
+      draw(d);
+      $('#gopts', d).onclick = (e) => { const b = e.target.closest('[data-g]'); if (!b) return; chosen.has(b.dataset.g) ? chosen.delete(b.dataset.g) : chosen.add(b.dataset.g); draw(d); };
+      const add = () => { const v = $('#gnew', d).value.trim(); if (!v) return; chosen.add(v); $('#gnew', d).value = ''; draw(d); };
+      $('#gadd', d).onclick = add;
+      $('#gnew', d).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+      $('#gnew', d).focus();
+    },
+  });
+}
+
 export async function render(root) {
   const qs = params();
   if (qs.get('connected')) { toast(`Connected: ${qs.get('connected')}`, 'ok'); history.replaceState(null, '', '#/accounts'); await refresh(); }
@@ -114,6 +146,8 @@ export async function render(root) {
       <div class="card acct" data-id="${a.id}">
         <div class="acct-top">${avatar(a, 'lg')}<div class="grow" style="min-width:0"><div class="bold ellipsis">${esc(a.name)}</div><div class="muted small ellipsis">${esc(a.handle || netLabel(a.type))}</div></div></div>
         <div class="row">${statusBadge(a.status)}<span class="muted small">${esc(netLabel(a.type))}</span>${a.profile_url ? `<a class="small right" href="${esc(a.profile_url)}" target="_blank" rel="noopener">Profile ${icon('ext')}</a>` : ''}</div>
+        <div class="row tags">${(a.groups || []).map((g) => `<span class="tag">${esc(g)}</span>`).join('')}
+          <button class="btn sm ghost tiny" data-act="groups">${(a.groups || []).length ? 'Edit groups' : '+ Add to a group'}</button></div>
         ${a.last_error && a.status !== 'ok' ? `<div class="err">${esc(a.last_error)}</div>` : ''}
         ${a.needs_setup ? `<div class="callout warn">${icon('alert')}<div>Choose who can see posts from this account before posting.</div></div>` : ''}
         <div class="row">
@@ -135,6 +169,7 @@ export async function render(root) {
     const reconnect = () => (a.type === 'mastodon' && !a.fields.token ? mastodonDialog() : p.connector && !(a.type === 'mastodon' && a.fields.token) ? connect(p.connector).catch((err) => toast(err.message, 'bad')) : formDialog(a.type, a));
     if (b.dataset.act === 'reconnect') return reconnect();
     if (b.dataset.act === 'settings') return postSettings(a, rerender);
+    if (b.dataset.act === 'groups') return groupDialog(a, rerender);
     if (b.dataset.act === 'check') return busy(b, async () => { const r = await api(`/accounts/${a.id}/check`, { method: 'POST' }); toast(r.message, r.ok ? 'ok' : 'bad'); await refresh(); rerender(); })();
     if (b.dataset.act === 'more') {
       const { menu } = await import('../core.js');

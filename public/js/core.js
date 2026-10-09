@@ -4,7 +4,7 @@ export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** App-wide state loaded from /api/bootstrap. */
-export const state = { user: null, providers: {}, connectors: {}, accounts: [], settings: {}, snippets: [], aiProviders: {}, counts: { queued: 0, scheduled: 0, failed: 0, published: 0 }, storage: 'disk', slots: [], nextSlot: null, eventKinds: {}, agentTools: [] };
+export const state = { user: null, providers: {}, connectors: {}, accounts: [], groups: [], settings: {}, snippets: [], aiProviders: {}, counts: { queued: 0, scheduled: 0, failed: 0, published: 0 }, storage: 'disk', slots: [], nextSlot: null, eventKinds: {}, agentTools: [] };
 
 export class ApiError extends Error {
   constructor(message, status, data) { super(message); this.status = status; this.data = data; }
