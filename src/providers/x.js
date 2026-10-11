@@ -80,6 +80,7 @@ async function uploadMedia(m, headers) {
 
 export const provider = {
   id: 'x', label: 'X', color: '#111111', limit: 280, length: lengthUrlsAs(23),
+  adult: 'label',
   media: { max: 4, video: true },
   thread: 'native',
   connector: 'x',

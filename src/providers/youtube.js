@@ -57,6 +57,7 @@ export function splitTitle(text) {
 
 export const provider = {
   id: 'youtube', label: 'YouTube', color: '#ff0000', limit: 5000,
+  adult: 'no',
   media: { max: 1, video: true, required: true, videoAlone: true, videoOnly: true },
   connector: 'youtube',
   needsSetup: (config) => !config.privacyStatus,

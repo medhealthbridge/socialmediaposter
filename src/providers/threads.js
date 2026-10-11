@@ -44,6 +44,7 @@ export async function refreshIfNeeded(config, saveConfig) {
 
 export const provider = {
   id: 'threads', label: 'Threads', color: '#000000', limit: 500, length: graphemes,
+  adult: 'no',
   media: { max: 10, video: true },
   thread: 'native',
   connector: 'threads',

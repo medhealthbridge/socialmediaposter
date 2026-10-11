@@ -66,6 +66,7 @@ export function splitPin(text) {
 
 export const provider = {
   id: 'pinterest', label: 'Pinterest', color: '#e60023', limit: 800,
+  adult: 'no',
   media: { max: 1, video: false, required: true, imageTypes: ['image/jpeg', 'image/png'] },
   connector: 'pinterest',
   async publish({ config, app, text, media, saveConfig }) {

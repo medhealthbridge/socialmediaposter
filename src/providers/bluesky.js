@@ -11,6 +11,7 @@ async function session(config) {
 
 export const provider = {
   id: 'bluesky', label: 'Bluesky', color: '#1185fe', limit: 300, length: graphemes,
+  adult: 'label',
   media: { max: 4, video: false, maxImageBytes: 1_000_000 },
   thread: 'native',
   fields: [

@@ -141,6 +141,28 @@ const whenFrom = (body, slot) => {
     // ---------------- accounts
     listAccounts: async (uid) => (await db.all('SELECT * FROM accounts WHERE user_id=? ORDER BY type, name', uid)).map(accountView),
 
+    /** Groups you have marked as adult. Stored by name, like the groups themselves. */
+    async adultGroups(uid) {
+      const saved = await settings.get(uid, 'adultGroups', []);
+      const live = await svc.listGroups(uid);
+      return (Array.isArray(saved) ? saved : []).filter((g) => live.some((x) => x.toLowerCase() === String(g).toLowerCase()));
+    },
+
+    async setAdultGroups(uid, names) {
+      const live = await svc.listGroups(uid);
+      const next = cleanGroups(names, live).filter((g) => live.some((x) => x.toLowerCase() === g.toLowerCase()));
+      await settings.set(uid, 'adultGroups', next);
+      await events.add(uid, 'settings', next.length ? `Marked as adult: ${next.join(', ')}` : 'No groups are marked adult', { actor: svc.actor });
+      return next;
+    },
+
+    /** True when an account sits in any group marked adult. */
+    async adultAccountIds(uid) {
+      const adult = (await svc.adultGroups(uid)).map((g) => g.toLowerCase());
+      if (!adult.length) return new Set();
+      return new Set((await svc.listAccounts(uid)).filter((a) => a.groups.some((g) => adult.includes(g.toLowerCase()))).map((a) => a.id));
+    },
+
     /** Every group name in use, in the order they first appear. */
     async listGroups(uid) {
       const out = [];
@@ -311,6 +333,19 @@ const whenFrom = (body, slot) => {
       for (const id of allIds) if (!mm.has(id)) out.push(`attached media #${id} no longer exists`);
       const items = mediaIds.map((id) => mm.get(id)).filter(Boolean);
       if (!accountIds.length) out.push('pick at least one account');
+
+      // Keeping an adult group apart from the rest. Instagram, Facebook, Threads, YouTube,
+      // TikTok, Pinterest and LinkedIn all remove accounts over explicit content, so one
+      // wrong chip would cost a whole channel. Both of these stop the post, not just warn.
+      const adultIds = await svc.adultAccountIds(uid);
+      if (adultIds.size) {
+        const picked = accountIds.filter((id) => adultIds.has(id));
+        const others = accountIds.filter((id) => !adultIds.has(id));
+        if (picked.length && others.length) {
+          const names = await db.all(`SELECT name FROM accounts WHERE user_id=? AND id IN ${inList(others)}`, uid, ...others);
+          out.push(`this post mixes an adult group with ${names.map((x) => x.name).join(', ')} — send them separately`);
+        }
+      }
       for (const aid of accountIds) {
         const a = await db.get('SELECT * FROM accounts WHERE id=? AND user_id=?', aid, uid);
         if (!a) { out.push(`unknown account ${aid}`); continue; }
@@ -318,6 +353,9 @@ const whenFrom = (body, slot) => {
         if (!p) { out.push(`${a.name}: network no longer supported`); continue; }
         const t = overrides[aid] ?? text;
         const where = `${a.name} (${p.label})`;
+        if (adultIds.has(aid) && (p.adult || 'no') === 'no') {
+          out.push(`${where}: ${p.label} does not allow adult content — posting it there risks losing the account`);
+        }
         if (!t.trim() && !items.length) out.push(`${where}: nothing to post`);
         const len = lengthOf(a.type, t);
         if (len > p.limit) out.push(`${where}: ${len}/${p.limit} characters`);

@@ -45,6 +45,7 @@ export const connector = {
 
 export const facebook = {
   id: 'facebook', label: 'Facebook Page', color: '#0866ff', limit: 63206,
+  adult: 'no',
   media: { max: 10, video: true, videoAlone: true },
   thread: 'comment',
   connector: 'meta',
@@ -100,6 +101,7 @@ export function publicUrlOf(m, network) {
 
 export const instagram = {
   id: 'instagram', label: 'Instagram', color: '#e1306c', limit: 2200,
+  adult: 'no',
   media: { max: 10, video: true, required: true, imageTypes: ['image/jpeg'] },
   thread: 'comment',
   connector: 'meta',

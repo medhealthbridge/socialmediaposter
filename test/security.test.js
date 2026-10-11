@@ -382,7 +382,7 @@ test('T-GRP-01 groups gather accounts across networks, and stay one person’s o
   }
 
   // The group list is gathered from the accounts themselves — no separate thing to maintain.
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Kids']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Adults', 'Animals', 'Kids']);
   const accounts = (await call('/api/accounts', { cookie })).json;
   const animals = accounts.filter((a) => a.groups.includes('Animals'));
   assert.equal(animals.length, 3, 'one group reaches across all three networks');
@@ -391,7 +391,7 @@ test('T-GRP-01 groups gather accounts across networks, and stay one person’s o
   const extra = (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'mock', name: 'Animals spare', config: {} } })).json;
   const back = await call(`/api/accounts/${extra.id}`, { method: 'PATCH', cookie, body: { groups: ['  animals  ', 'ANIMALS', 'Shorts'] } });
   assert.deepEqual(back.json.groups, ['Animals', 'Shorts'], 'matched case-insensitively, kept the first spelling, duplicate dropped');
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Kids', 'Shorts']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Adults', 'Animals', 'Kids', 'Shorts']);
 
   // Posting to a whole group is just posting to its accounts.
   const post = await call('/api/posts', { method: 'POST', cookie, body: { text: 'Otters holding hands', accountIds: animals.map((a) => a.id) } });
@@ -400,15 +400,15 @@ test('T-GRP-01 groups gather accounts across networks, and stay one person’s o
 
   // Renaming a group moves every account at once; deleting it leaves the accounts alone.
   assert.equal((await call('/api/groups/Kids', { method: 'PUT', cookie, body: { name: 'Family' } })).json.changed, 3);
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Family', 'Shorts']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Adults', 'Animals', 'Family', 'Shorts']);
   assert.equal((await call('/api/groups/Shorts', { method: 'DELETE', cookie })).json.changed, 1);
   assert.equal((await call('/api/accounts', { cookie })).json.length, 10, 'deleting a group deletes no accounts');
 
   // None of it is visible to, or reachable by, anyone else.
-  assert.deepEqual((await call('/api/groups', { cookie: other.cookie })).json, []);
+  assert.deepEqual((await call('/api/groups', { cookie: other.cookie })).json.groups, []);
   assert.equal((await call(`/api/accounts/${made[0].id}`, { method: 'PATCH', cookie: other.cookie, body: { groups: ['Stolen'] } })).status, 404);
   assert.equal((await call('/api/groups/Animals', { method: 'PUT', cookie: other.cookie, body: { name: 'Hijacked' } })).json.changed, 0);
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Adults', 'Animals', 'Family'], 'still ours, still intact');
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Adults', 'Animals', 'Family'], 'still ours, still intact');
 });
 
 test('T-GRP-02 group names are tidied, capped and never split a category in two', async () => {
@@ -428,7 +428,7 @@ test('T-GRP-02 group names are tidied, capped and never split a category in two'
   // Inner whitespace is collapsed, so "Kids   Shows" and "Kids Shows" are one group.
   await setGroups(a.id, ['Kids   Shows']);
   await setGroups(b.id, ['Kids Shows']);
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Kids Shows'], 'one group, not two');
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Kids Shows'], 'one group, not two');
 
   // Long names are cut to a sane length rather than rejected.
   const long = await setGroups(a.id, ['x'.repeat(200)]);
@@ -444,7 +444,7 @@ test('T-GRP-02 group names are tidied, capped and never split a category in two'
   assert.equal((await call('/api/groups/Kids', { method: 'PUT', cookie, body: { name: 'Animals' } })).json.changed, 1);
   const after = (await call('/api/accounts', { cookie })).json.find((x) => x.id === b.id);
   assert.deepEqual(after.groups, ['Animals'], 'merged into one entry, not listed twice');
-  assert.deepEqual((await call('/api/groups', { cookie })).json, ['Animals']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, ['Animals']);
 
   // Renaming something that is not a group changes nothing and is not an error.
   assert.equal((await call('/api/groups/Nope', { method: 'PUT', cookie, body: { name: 'Something' } })).json.changed, 0);
@@ -452,7 +452,7 @@ test('T-GRP-02 group names are tidied, capped and never split a category in two'
   // A group exists only while an account is in it.
   await call(`/api/accounts/${a.id}`, { method: 'DELETE', cookie });
   await setGroups(b.id, []);
-  assert.deepEqual((await call('/api/groups', { cookie })).json, [], 'the last member leaving removes the group');
+  assert.deepEqual((await call('/api/groups', { cookie })).json.groups, [], 'the last member leaving removes the group');
   assert.equal((await call('/api/accounts', { cookie })).json.length, 1, 'and the account itself is untouched');
 
   // Nonsense in place of a list is refused, not stored.
@@ -461,4 +461,71 @@ test('T-GRP-02 group names are tidied, capped and never split a category in two'
     assert.ok(r.status < 500, `groups: ${JSON.stringify(bad)} -> ${r.status}`);
     if (r.status === 200) assert.deepEqual(r.json.groups, [], `groups: ${JSON.stringify(bad)} stored nothing`);
   }
+});
+
+test('T-ADULT-01 an adult group cannot reach a network that bans adult content', async () => {
+  const { ctx, call } = await boot();
+  const me = await call('/api/auth/signup', { method: 'POST', body: { email: 'owner@x.io', password: 'ownerpass1' } });
+  const cookie = me.cookie;
+  const uid = me.json.id;
+  const group = (id, groups) => call(`/api/accounts/${id}`, { method: 'PATCH', cookie, body: { groups } });
+
+  // A webhook is your own endpoint, so adult content is your business there. YouTube bans it,
+  // and is seeded the way its login would, since it cannot be connected with a form.
+  const spicy = (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'webhook', name: 'Spicy feed', config: { url: 'https://example.com/hook' } } })).json;
+  const spicy2 = (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'webhook', name: 'Spicy feed 2', config: { url: 'https://example.com/hook2' } } })).json;
+  const yt = await ctx.svc.upsertOAuthAccount(uid, { type: 'youtube', name: 'Animals YT', external_id: 'UC_a',
+    config: { accessToken: 't', refreshToken: 'r', expiresAt: new Date(Date.now() + 9e8).toISOString(), channelId: 'c', privacyStatus: 'public' } });
+  assert.ok(spicy?.id && spicy2?.id && yt?.id, 'accounts made');
+  await group(spicy.id, ['Spicy']);
+  await group(spicy2.id, ['Spicy']);
+  await group(yt.id, ['Animals']);
+
+  // Only the adult rules are under test here; YouTube's own "needs a video" rule is not.
+  const check = async (accountIds) => {
+    const r = await call('/api/posts/check', { method: 'POST', cookie, body: { text: 'hello', accountIds } });
+    return r.json.problems.filter((x) => /adult/i.test(x));
+  };
+
+  // Until a group is marked adult nothing changes, so this is opt-in.
+  assert.deepEqual(await check([spicy.id, yt.id]), [], 'no restriction before you ask for one');
+
+  assert.deepEqual((await call('/api/groups', { method: 'PUT', cookie, body: { adult: ['Spicy'] } })).json, ['Spicy']);
+  assert.deepEqual((await call('/api/groups', { cookie })).json.adult, ['Spicy']);
+
+  // Mixing the adult group with anything else is refused, and says which account.
+  assert.match((await check([spicy.id, yt.id])).join(' | '), /mixes an adult group with Animals YT/);
+
+  // The adult group on its own, on your own endpoints, is fine.
+  assert.deepEqual(await check([spicy.id, spicy2.id]), [], 'your own endpoints are your business');
+
+  // Put an adult-group account on a network that bans it and the post is stopped.
+  await group(yt.id, ['Spicy']);
+  assert.match((await check([yt.id])).join(' | '), /YouTube does not allow adult content/);
+
+  // It is a refusal, not a warning: publishing is blocked too.
+  await group(yt.id, ['Animals']);
+  const tryPost = await call('/api/posts', { method: 'POST', cookie, body: { text: 'hello', accountIds: [spicy.id, yt.id], publishNow: true } });
+  assert.ok(tryPost.status >= 400, `publishing a mixed post is refused (got ${tryPost.status})`);
+
+  // Unmarking the group puts everything back.
+  await call('/api/groups', { method: 'PUT', cookie, body: { adult: [] } });
+  assert.deepEqual(await check([spicy.id, yt.id]), []);
+});
+
+test('T-ADULT-02 every network carries an adult policy, and the strict ones are strict', async () => {
+  const { call } = await boot();
+  const me = await call('/api/auth/signup', { method: 'POST', body: { email: 'owner@x.io', password: 'ownerpass1' } });
+  const nets = (await call('/api/bootstrap', { cookie: me.cookie })).json.providers;
+  for (const [id, p] of Object.entries(nets)) {
+    assert.ok(['no', 'label', 'own'].includes(p.adult), `${id} has a policy, got ${p.adult}`);
+  }
+  // The ones that remove accounts over this must be marked 'no'.
+  for (const id of ['instagram', 'facebook', 'threads', 'youtube', 'tiktok', 'pinterest', 'linkedin']) {
+    assert.equal(nets[id].adult, 'no', `${id} bans adult content`);
+  }
+  // Your own channels and endpoints are yours.
+  for (const id of ['telegram', 'discord', 'webhook']) assert.equal(nets[id].adult, 'own', id);
+  // These allow it when it is labelled.
+  for (const id of ['x', 'bluesky', 'mastodon']) assert.equal(nets[id].adult, 'label', id);
 });

@@ -82,7 +82,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
       user: me, providers: publicProviders(), connectors: publicConnectors(), aiProviders: AI_PROVIDERS, storage: svc.media.kind, eventKinds: KINDS,
       accounts: await svc.listAccounts(uid), settings: await svc.settings.view(uid), snippets: await svc.listSnippets(uid), counts: await svc.counts(uid),
       mcpUrl: `${await svc.settings.baseUrl(uid)}/mcp`,
-      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid), agentTools: agent.tools, groups: await svc.listGroups(uid),
+      slots: await svc.getSlots(uid), nextSlot: await svc.nextSlot(uid), agentTools: agent.tools, groups: await svc.listGroups(uid), adultGroups: await svc.adultGroups(uid),
     };
   });
 
@@ -108,7 +108,8 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
     if (!acc) throw httpError(400, 'nothing to change');
     return acc;
   });
-  r('GET', '/api/groups', ({ uid }) => svc.listGroups(uid));
+  r('GET', '/api/groups', async ({ uid }) => ({ groups: await svc.listGroups(uid), adult: await svc.adultGroups(uid) }));
+  r('PUT', '/api/groups', ({ uid, body }) => svc.setAdultGroups(uid, body.adult));
   r('PUT', '/api/groups/:name', ({ uid, params, body }) => svc.renameGroup(uid, params.name, body.name));
   r('DELETE', '/api/groups/:name', ({ uid, params }) => svc.renameGroup(uid, params.name, ''));
   r('DELETE', '/api/accounts/:id', ({ uid, params }) => svc.deleteAccount(uid, id(params)));

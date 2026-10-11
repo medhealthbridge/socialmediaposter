@@ -71,6 +71,7 @@ const PRIVACY_LABEL = {
 
 export const provider = {
   id: 'tiktok', label: 'TikTok', color: '#010101', limit: 2200, length: graphemes,
+  adult: 'no',
   media: { max: 35, video: true, required: true, videoAlone: true },
   connector: 'tiktok',
   // TikTok requires the privacy choice to be made by the person, with no default.

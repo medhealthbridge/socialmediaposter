@@ -66,6 +66,7 @@ async function uploadVideo(m, config, app, owner) {
 
 export const provider = {
   id: 'linkedin', label: 'LinkedIn', color: '#0a66c2', limit: 3000,
+  adult: 'no',
   media: { max: 9, video: true, videoAlone: true },
   thread: 'comment',
   connector: 'linkedin',

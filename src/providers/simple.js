@@ -4,6 +4,7 @@ export const endpoints = { telegram: 'https://api.telegram.org' };
 
 export const telegram = {
   id: 'telegram', label: 'Telegram', color: '#229ed9', limit: 4096,
+  adult: 'own',
   media: { max: 10, video: true },
   thread: 'native',
   fields: [
@@ -52,6 +53,7 @@ export const telegram = {
 
 export const discord = {
   id: 'discord', label: 'Discord', color: '#5865f2', limit: 2000,
+  adult: 'own',
   media: { max: 10, video: true, maxBytes: 25 * 1024 * 1024 },
   thread: 'sequential',
   fields: [{ key: 'webhookUrl', label: 'Webhook URL (Channel settings → Integrations → Webhooks)', secret: true }],
@@ -76,6 +78,7 @@ export const discord = {
 
 export const webhook = {
   id: 'webhook', label: 'Webhook (Zapier, Make, n8n…)', color: '#ff6d00', limit: 100000,
+  adult: 'own',
   media: { max: 20, video: true },
   thread: 'sequential',
   fields: [
@@ -93,6 +96,7 @@ export const webhook = {
 
 export const mock = {
   id: 'mock', label: 'Test account (dry run)', color: '#8a8f98', limit: 500,
+  adult: 'own',
   media: { max: 10, video: true },
   thread: 'sequential',
   fields: [],

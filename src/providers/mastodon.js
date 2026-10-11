@@ -41,6 +41,7 @@ export const connector = {
 
 export const provider = {
   id: 'mastodon', label: 'Mastodon', color: '#6364ff', limit: 500, length: lengthUrlsAs(23),
+  adult: 'label',
   media: { max: 4, video: true },
   thread: 'native',
   connector: 'mastodon',

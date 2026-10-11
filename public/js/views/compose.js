@@ -133,14 +133,25 @@ export async function render(root, params) {
         const mine = members(g);
         const on = mine.length && mine.every((a) => s.accountIds.has(a.id));
         const some = !on && mine.some((a) => s.accountIds.has(a.id));
-        return `<button type="button" class="chip plain ${on ? 'on' : ''} ${some ? 'part' : ''}" data-g="${esc(g)}"
-          data-tip="${esc(`${mine.length} account${mine.length === 1 ? '' : 's'}: ${mine.map((a) => a.name).join(', ')}`)}">${esc(g)}<span class="n">${mine.length}</span></button>`;
+        const adult = isAdult(g);
+        const tip = `${mine.length} account${mine.length === 1 ? '' : 's'}: ${mine.map((a) => a.name).join(', ')}`
+          + (adult ? ' · adult — posts on its own, never alongside another group' : '');
+        return `<button type="button" class="chip plain ${on ? 'on' : ''} ${some ? 'part' : ''} ${adult ? 'adult' : ''}" data-g="${esc(g)}"
+          data-tip="${esc(tip)}">${adult ? '18+ ' : ''}${esc(g)}<span class="n">${mine.length}</span></button>`;
       }).join('');
   }
+  const isAdult = (g) => (state.adultGroups || []).some((x) => x.toLowerCase() === String(g).toLowerCase());
+  const adultAccount = (a) => (a.groups || []).some(isAdult);
+
   $('#groups', root).onclick = (e) => {
     const b = e.target.closest('[data-g]'); if (!b) return;
-    const mine = state.accounts.filter((a) => a.groups?.includes(b.dataset.g));
+    const g = b.dataset.g;
+    const mine = state.accounts.filter((a) => a.groups?.includes(g));
     const allOn = mine.every((a) => s.accountIds.has(a.id));
+    // An adult group goes out on its own. Picking one clears everything else rather than
+    // letting it ride along to a network that would close the account over it.
+    if (!allOn && isAdult(g)) s.accountIds.clear();
+    else if (!allOn && [...s.accountIds].map(accountById).filter(Boolean).some(adultAccount)) s.accountIds.clear();
     for (const a of mine) allOn ? s.accountIds.delete(a.id) : s.accountIds.add(a.id);
     renderGroups(); renderAccounts(); renderOverrides(); renderParts(); update();
   };
