@@ -9,11 +9,11 @@ const store = {
 };
 
 export async function render(root, params) {
-  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'queue', when: '', recycle: false, recycleDays: 7, recycleLeft: '', notes: '', uploads: 0, parts: [] };
+  const s = { id: null, post: null, text: '', media: [], accountIds: new Set(), overrides: {}, customize: false, mode: 'queue', when: '', recycle: false, recycleDays: 7, recycleLeft: '', notes: '', uploads: 0, parts: [], allowRisky: false };
 
   if (params.get('id')) {
     const p = await api(`/posts/${params.get('id')}`);
-    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, parts: p.parts.map((x) => ({ text: x.text, media: x.mediaItems.filter((m) => !m.missing) })), notes: p.notes || '', recycle: !!p.recycle_days, recycleDays: p.recycle_days || 7, recycleLeft: p.recycle_left ?? '' });
+    Object.assign(s, { id: p.id, post: p, text: p.text, media: p.mediaItems.filter((m) => !m.missing), accountIds: new Set(p.deliveries.map((d) => d.account_id)), overrides: { ...p.overrides }, customize: Object.keys(p.overrides).length > 0, parts: p.parts.map((x) => ({ text: x.text, media: x.mediaItems.filter((m) => !m.missing) })), notes: p.notes || '', allowRisky: !!p.allow_risky, recycle: !!p.recycle_days, recycleDays: p.recycle_days || 7, recycleLeft: p.recycle_left ?? '' });
     if (p.scheduled_at) { s.mode = 'schedule'; s.when = toLocalInput(p.scheduled_at); }
   } else {
     const saved = store.get();
@@ -213,8 +213,19 @@ export async function render(root, params) {
     if (!box) return;
     if (!s.accountIds.size || (!s.text.trim() && !s.media.length)) { box.innerHTML = ''; return; }
     try {
-      const { problems } = await api('/posts/check', { method: 'POST', body: payload() });
-      box.innerHTML = problems.map((p) => `<div class="problem">${icon('alert')}<span>${esc(p)}</span></div>`).join('');
+      const { problems, risks } = await api('/posts/check', { method: 'POST', body: payload() });
+      // A platform rule you are allowed to overrule is shown apart from a real error, with
+      // the switch that overrules it, so accepting one is always something you did on purpose.
+      const hard = problems.filter((p) => !risks.includes(p));
+      box.innerHTML = hard.map((p) => `<div class="problem">${icon('alert')}<span>${esc(p)}</span></div>`).join('')
+        + (risks.length ? `<div class="problem risk"><div>${icon('alert')}
+            <b>Against the platform's rules</b>
+            <ul>${risks.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+            <label class="check"><span class="switch"><input type="checkbox" id="risky" ${s.allowRisky ? 'checked' : ''}><span></span></span>
+              Post it anyway and let the platform decide</label>
+            ${s.allowRisky ? '<p class="hint">It will be sent. Whatever comes back is in the activity log.</p>' : ''}
+          </div></div>` : '');
+      $('#risky', box)?.addEventListener('change', (e) => { s.allowRisky = e.target.checked; update(); });
     } catch { /* offline — the server validates on submit anyway */ }
   }, 450);
 
@@ -530,7 +541,7 @@ export async function render(root, params) {
 
   // ---------- submit
   function payload() {
-    return { text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.customize ? s.overrides : {}, parts: s.parts.map((x) => ({ text: x.text, media: x.media.map((m) => m.id) })) };
+    return { text: s.text, media: s.media.map((m) => m.id), accountIds: [...s.accountIds], overrides: s.customize ? s.overrides : {}, parts: s.parts.map((x) => ({ text: x.text, media: x.media.map((m) => m.id) })), allowRisky: s.allowRisky };
   }
   $('#submit', root).onclick = busy($('#submit', root), async () => {
     if (s.uploads) return toast('Wait for uploads to finish');

@@ -30,7 +30,8 @@ const schema = (pg) => {
     id ${id}, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, media TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'queued', position INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'manual', claimed_at TEXT, posted_at TEXT, scheduled_at TEXT,
-    recycle_days INTEGER, recycle_left INTEGER, parts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT ${now});
+    recycle_days INTEGER, recycle_left INTEGER, parts TEXT NOT NULL DEFAULT '[]',
+    allow_risky INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT ${now});
   CREATE TABLE IF NOT EXISTS deliveries (
     id ${id}, post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending',
@@ -85,7 +86,8 @@ const LATER = {
     status: "TEXT NOT NULL DEFAULT 'ok'", last_error: 'TEXT', groups: "TEXT NOT NULL DEFAULT '[]'" },
   posts: { user_id: 'INTEGER', position: 'INTEGER NOT NULL DEFAULT 0', notes: "TEXT NOT NULL DEFAULT ''",
     source: "TEXT NOT NULL DEFAULT 'manual'", claimed_at: 'TEXT', posted_at: 'TEXT', scheduled_at: 'TEXT',
-    recycle_days: 'INTEGER', recycle_left: 'INTEGER', parts: "TEXT NOT NULL DEFAULT '[]'" },
+    recycle_days: 'INTEGER', recycle_left: 'INTEGER', parts: "TEXT NOT NULL DEFAULT '[]'",
+    allow_risky: 'INTEGER NOT NULL DEFAULT 0' },
   deliveries: { text_override: 'TEXT', remote_id: 'TEXT', metrics: 'TEXT', metrics_at: 'TEXT' },
   media: { url: 'TEXT' },
 };

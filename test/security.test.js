@@ -484,7 +484,7 @@ test('T-ADULT-01 an adult group cannot reach a network that bans adult content',
   // Only the adult rules are under test here; YouTube's own "needs a video" rule is not.
   const check = async (accountIds) => {
     const r = await call('/api/posts/check', { method: 'POST', cookie, body: { text: 'hello', accountIds } });
-    return r.json.problems.filter((x) => /adult/i.test(x));
+    return r.json.problems.filter((x) => /adult|explicit/i.test(x));
   };
 
   // Until a group is marked adult nothing changes, so this is opt-in.
@@ -501,12 +501,31 @@ test('T-ADULT-01 an adult group cannot reach a network that bans adult content',
 
   // Put an adult-group account on a network that bans it and the post is stopped.
   await group(yt.id, ['Spicy']);
-  assert.match((await check([yt.id])).join(' | '), /YouTube does not allow adult content/);
+  assert.match((await check([yt.id])).join(' | '), /YouTube removes accounts over explicit content/);
 
   // It is a refusal, not a warning: publishing is blocked too.
   await group(yt.id, ['Animals']);
   const tryPost = await call('/api/posts', { method: 'POST', cookie, body: { text: 'hello', accountIds: [spicy.id, yt.id], publishNow: true } });
   assert.ok(tryPost.status >= 400, `publishing a mixed post is refused (got ${tryPost.status})`);
+
+  // Overruling it is possible, but only by saying so for that one post.
+  const mix = { text: 'hello', accountIds: [spicy.id, yt.id] };
+  const checked = await call('/api/posts/check', { method: 'POST', cookie, body: mix });
+  assert.ok(checked.json.risks.length, 'the composer is told what it would be accepting');
+  assert.ok(checked.json.problems.some((x) => /adult|explicit/i.test(x)), 'and it still blocks by default');
+  const overruled = await call('/api/posts/check', { method: 'POST', cookie, body: { ...mix, allowRisky: true } });
+  assert.deepEqual(overruled.json.problems.filter((x) => /adult|explicit/i.test(x)), [], 'accepted, so no longer a problem');
+  assert.ok(overruled.json.risks.length, 'but still reported, so it is never silent');
+
+  // The acceptance is remembered, so a queued post still goes out later.
+  const saved = await call('/api/posts', { method: 'POST', cookie, body: { ...mix, allowRisky: true } });
+  assert.equal(saved.status, 201, `an accepted post saves: ${saved.text.slice(0, 120)}`);
+  assert.equal((await call(`/api/posts/${saved.json.id}`, { cookie })).json.allow_risky, 1, 'the choice is stored on the post');
+  // One that never accepted anything is still refused at publish time.
+  const plain = await call('/api/posts', { method: 'POST', cookie, body: mix });
+  assert.equal(plain.status, 201, 'queuing without accepting is fine');
+  const pub = await call(`/api/posts/${plain.json.id}/publish`, { method: 'POST', cookie });
+  assert.ok(pub.status >= 400, `publishing it is still refused (got ${pub.status})`);
 
   // Unmarking the group puts everything back.
   await call('/api/groups', { method: 'PUT', cookie, body: { adult: [] } });

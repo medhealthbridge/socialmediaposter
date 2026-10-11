@@ -122,7 +122,12 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
   r('GET', '/api/posts', ({ uid, query }) => svc.listPosts(uid, { status: query.get('status'), q: query.get('q'), limit: query.get('limit') }));
   r('GET', '/api/counts', ({ uid }) => svc.counts(uid));
   r('POST', '/api/posts', ({ uid, body }) => svc.createPost(uid, body), { status: 201 });
-  r('POST', '/api/posts/check', async ({ uid, body }) => ({ problems: await svc.problems(uid, { text: body.text || '', media: (body.media || []).map(Number), accountIds: (body.accountIds || []).map(Number), overrides: body.overrides || {} }) }));
+  r('POST', '/api/posts/check', async ({ uid, body }) => {
+    const content = { text: body.text || '', media: (body.media || []).map(Number), accountIds: (body.accountIds || []).map(Number), overrides: body.overrides || {} };
+    // `risks` are the findings you are allowed to overrule; `problems` still contains them
+    // unless this post has accepted them, so nothing goes out on a platform's rules by accident.
+    return { problems: await svc.problems(uid, { ...content, allowRisky: !!body.allowRisky }), risks: await svc.risks(uid, content) };
+  });
   r('POST', '/api/queue/next', ({ uid }) => svc.publishNext(uid));
   r('GET', '/api/posts/:id', ({ uid, params }) => svc.getPost(uid, id(params)));
   r('PUT', '/api/posts/:id', ({ uid, params, body }) => svc.updatePost(uid, id(params), body));

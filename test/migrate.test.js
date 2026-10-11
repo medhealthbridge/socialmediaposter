@@ -30,7 +30,7 @@ const OLD = (serial) => [
 /** Every column the app relies on but that an old database would not have. */
 const EXPECTED = {
   accounts: ['user_id', 'handle', 'avatar', 'external_id', 'profile_url', 'status', 'last_error', 'groups'],
-  posts: ['user_id', 'position', 'notes', 'source', 'claimed_at', 'posted_at', 'scheduled_at', 'recycle_days', 'recycle_left', 'parts'],
+  posts: ['user_id', 'position', 'notes', 'source', 'claimed_at', 'posted_at', 'scheduled_at', 'recycle_days', 'recycle_left', 'parts', 'allow_risky'],
   media: ['url'],
 };
 

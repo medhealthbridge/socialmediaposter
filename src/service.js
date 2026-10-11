@@ -326,8 +326,9 @@ const whenFrom = (body, slot) => {
     },
 
     /** Human-readable problems for publishing this content to these accounts. */
-    async problems(uid, { text, media: mediaIds, accountIds, overrides = {}, parts = [] }) {
+    async problems(uid, { text, media: mediaIds, accountIds, overrides = {}, parts = [], allowRisky = false }) {
       const out = [];
+      const risky = [];
       const allIds = [...new Set([...mediaIds, ...parts.flatMap((x) => x.media || [])])];
       const mm = await media.getMany(uid, allIds);
       for (const id of allIds) if (!mm.has(id)) out.push(`attached media #${id} no longer exists`);
@@ -343,7 +344,7 @@ const whenFrom = (body, slot) => {
         const others = accountIds.filter((id) => !adultIds.has(id));
         if (picked.length && others.length) {
           const names = await db.all(`SELECT name FROM accounts WHERE user_id=? AND id IN ${inList(others)}`, uid, ...others);
-          out.push(`this post mixes an adult group with ${names.map((x) => x.name).join(', ')} — send them separately`);
+          risky.push(`this post mixes an adult group with ${names.map((x) => x.name).join(', ')}`);
         }
       }
       for (const aid of accountIds) {
@@ -354,7 +355,7 @@ const whenFrom = (body, slot) => {
         const t = overrides[aid] ?? text;
         const where = `${a.name} (${p.label})`;
         if (adultIds.has(aid) && (p.adult || 'no') === 'no') {
-          out.push(`${where}: ${p.label} does not allow adult content — posting it there risks losing the account`);
+          risky.push(`${where}: ${p.label} removes accounts over explicit content — this does not come back`);
         }
         if (!t.trim() && !items.length) out.push(`${where}: nothing to post`);
         const len = lengthOf(a.type, t);
@@ -389,8 +390,19 @@ const whenFrom = (body, slot) => {
           }
         }
       }
-      return out;
+      // Risky findings are the ones you are allowed to overrule: they are about a platform's
+      // rules rather than something that cannot technically be sent. They still block by
+      // default, and only a post that explicitly accepts them gets through.
+      return allowRisky ? out : [...out, ...risky];
     },
+
+    /** Just the overrulable findings, so the composer can say what it is you would be accepting. */
+    async risks(uid, content) {
+      const all = await svc.problems(uid, { ...content, allowRisky: false });
+      const safe = await svc.problems(uid, { ...content, allowRisky: true });
+      return all.filter((x) => !safe.includes(x));
+    },
+
     async validate(uid, content) {
       const errs = await svc.problems(uid, content);
       if (errs.length) throw Object.assign(httpError(400, errs.join(' · ')), { problems: errs });
@@ -398,9 +410,9 @@ const whenFrom = (body, slot) => {
 
     async insertPost(uid, c, { source = 'manual', when = null } = {}) {
       const pos = (await db.get("SELECT COALESCE(MAX(position), 0) AS m FROM posts WHERE user_id=? AND status='queued'", uid)).m + 1;
-      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source,scheduled_at,recycle_days,recycle_left,parts) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      const id = await db.insert('INSERT INTO posts(user_id,text,media,status,position,notes,source,scheduled_at,recycle_days,recycle_left,parts,allow_risky) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
         uid, c.text, JSON.stringify(c.media), when ? 'scheduled' : 'queued', pos, c.notes ?? '', source,
-        when ? when.toISOString() : null, c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []));
+        when ? when.toISOString() : null, c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []), c.allowRisky ? 1 : 0);
       for (const aid of c.accountIds) await db.run('INSERT INTO deliveries(post_id,account_id,text_override) VALUES (?,?,?)', id, aid, c.overrides?.[aid] ?? null);
       return id;
     },
@@ -408,7 +420,7 @@ const whenFrom = (body, slot) => {
     /** Add a post to the queue; with publishNow it is published right away. */
     async createPost(uid, body, { source } = {}) {
       const n = normalize(body);
-      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, parts: n.parts ?? [], recycleDays: n.recycleDays, recycleLeft: n.recycleLeft };
+      const c = { text: n.text ?? '', media: n.media ?? [], accountIds: n.accountIds ?? [], overrides: n.overrides ?? {}, notes: n.notes, parts: n.parts ?? [], recycleDays: n.recycleDays, recycleLeft: n.recycleLeft, allowRisky: !!body.allowRisky };
       if (!c.text.trim() && !c.media.length) throw httpError(400, 'Write something or attach media');
       for (const aid of c.accountIds) await ownedAccount(uid, aid);
       await ownedMedia(uid, c);
@@ -433,6 +445,7 @@ const whenFrom = (body, slot) => {
         text: n.text ?? p.text, media: n.media ?? p.media, notes: n.notes ?? p.notes,
         parts: n.parts ?? p.parts.map(({ text, media: m }) => ({ text, media: m })),
         accountIds: n.accountIds ?? p.deliveries.map((d) => d.account_id), overrides: n.overrides ?? p.overrides,
+        allowRisky: body.allowRisky === undefined ? !!p.allow_risky : !!body.allowRisky,
         recycleDays: n.recycleDays !== undefined ? n.recycleDays : p.recycle_days,
         recycleLeft: n.recycleLeft !== undefined ? n.recycleLeft : p.recycle_left,
       };
@@ -445,10 +458,10 @@ const whenFrom = (body, slot) => {
         : body.scheduledAt !== undefined ? whenFrom(body, null)
         : p.scheduled_at ? new Date(p.scheduled_at) : null;
       if (reschedule) await svc.validate(uid, { ...c, accountIds: c.accountIds });
-      await db.run('UPDATE posts SET text=?, media=?, notes=?, scheduled_at=?, status=?, recycle_days=?, recycle_left=?, parts=? WHERE id=?',
+      await db.run('UPDATE posts SET text=?, media=?, notes=?, scheduled_at=?, status=?, recycle_days=?, recycle_left=?, parts=?, allow_risky=? WHERE id=?',
         c.text, JSON.stringify(c.media), c.notes ?? '', reschedule ? reschedule.toISOString() : null,
         reschedule ? 'scheduled' : p.status === 'scheduled' ? 'queued' : p.status,
-        c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []), id);
+        c.recycleDays ?? null, c.recycleLeft ?? null, JSON.stringify(c.parts ?? []), c.allowRisky ? 1 : 0, id);
       for (const d of p.deliveries) {
         if (d.status !== 'published' && !c.accountIds.includes(d.account_id)) await db.run('DELETE FROM deliveries WHERE id=?', d.id);
       }
@@ -497,7 +510,7 @@ const whenFrom = (body, slot) => {
       const p = await svc.getPost(uid, id);
       if (p.status === 'published') throw httpError(409, 'already published');
       const todo = p.deliveries.filter((d) => d.status !== 'published');
-      await svc.validate(uid, { text: p.text, media: p.media, parts: p.parts, accountIds: todo.map((d) => d.account_id), overrides: p.overrides });
+      await svc.validate(uid, { text: p.text, media: p.media, parts: p.parts, accountIds: todo.map((d) => d.account_id), overrides: p.overrides, allowRisky: !!p.allow_risky });
       const claim = await db.run("UPDATE posts SET status='publishing', claimed_at=? WHERE id=? AND (status IN ('queued','scheduled','failed','partial') OR (status='publishing' AND claimed_at < ?))",
         now(), id, new Date(Date.now() - STALE_MS).toISOString());
       if (!claim.changes) throw httpError(409, 'This post is already being published');
