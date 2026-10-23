@@ -11,7 +11,8 @@
     "test": "node --test \"test/*.test.js\"",
     "test:pg": "TEST_PG=postgres://postgres@127.0.0.1:5433 node --test --test-concurrency=1 \"test/*.test.js\"",
     "vendor": "esbuild scripts/vendor-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof \"--banner:js=const process=globalThis.process||{env:{}};\" --outfile=public/vendor/blob-upload.js",
-    "vendor:ffmpeg": "node scripts/vendor-ffmpeg.js"
+    "vendor:ffmpeg": "node scripts/vendor-ffmpeg.js",
+    "reset-password": "node scripts/reset-password.js"
   },
   "license": "MIT",
   "dependencies": {
