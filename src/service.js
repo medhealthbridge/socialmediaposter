@@ -141,6 +141,66 @@ const whenFrom = (body, slot) => {
     // ---------------- accounts
     listAccounts: async (uid) => (await db.all('SELECT * FROM accounts WHERE user_id=? ORDER BY type, name', uid)).map(accountView),
 
+    /**
+     * One view of everything that has gone out: a running total per account, and the posts
+     * themselves newest first, each with how it did and a link straight to it on the network.
+     * Optionally narrowed to one account or one group.
+     */
+    async dashboard(uid, { accountId = null, group = null, limit = 100 } = {}) {
+      const accounts = await svc.listAccounts(uid);
+      const byId = new Map(accounts.map((a) => [a.id, a]));
+
+      // Totals always cover every account, so narrowing the feed never hides the overview.
+      const published = accounts.length
+        ? await db.all(`SELECT d.account_id, d.metrics FROM deliveries d
+             WHERE d.status='published' AND d.account_id IN ${inList([...byId.keys()])}`, ...byId.keys())
+        : [];
+      const blank = () => ({ posts: 0, likes: 0, replies: 0, reposts: 0, views: 0 });
+      const totals = blank();
+      const per = new Map(accounts.map((a) => [a.id, blank()]));
+      for (const r of published) {
+        const m = J(r.metrics, null);
+        const t = per.get(r.account_id);
+        if (!t) continue;
+        t.posts++; totals.posts++;
+        for (const k of ['likes', 'replies', 'reposts', 'views']) {
+          const v = Number(m?.[k] || 0);
+          t[k] += v; totals[k] += v;
+        }
+      }
+
+      let wanted = accounts;
+      if (accountId) wanted = wanted.filter((a) => a.id === Number(accountId));
+      if (group) wanted = wanted.filter((a) => a.groups.some((g) => g.toLowerCase() === String(group).toLowerCase()));
+
+      let items = [];
+      if (wanted.length) {
+        const ids = wanted.map((a) => a.id);
+        const rows = await db.all(`SELECT d.id, d.account_id, d.status, d.remote_url, d.remote_id, d.published_at,
+            d.metrics, d.metrics_at, d.error, d.text_override, p.id AS post_id, p.text, p.media, p.created_at
+          FROM deliveries d JOIN posts p ON p.id = d.post_id
+          WHERE d.account_id IN ${inList(ids)}
+          ORDER BY COALESCE(d.published_at, p.created_at) DESC, d.id DESC LIMIT ?`,
+        ...ids, Math.min(Number(limit) || 100, 500));
+        const mm = await media.getMany(uid, [...new Set(rows.flatMap((r) => J(r.media, [])))]);
+        items = rows.map((r) => ({
+          id: r.id, postId: r.post_id, accountId: r.account_id, status: r.status, error: r.error,
+          text: r.text_override ?? r.text,
+          media: J(r.media, []).map((id) => mm.get(id)).filter(Boolean),
+          url: r.remote_url, remoteId: r.remote_id,
+          publishedAt: r.published_at, createdAt: r.created_at,
+          metrics: J(r.metrics, null), metricsAt: r.metrics_at,
+        }));
+      }
+
+      return {
+        totals,
+        accounts: accounts.map((a) => ({ ...a, totals: per.get(a.id), canMeasure: !!providers[a.type]?.metrics })),
+        groups: await svc.listGroups(uid),
+        items,
+      };
+    },
+
     /** Groups you have marked as adult. Stored by name, like the groups themselves. */
     async adultGroups(uid) {
       const saved = await settings.get(uid, 'adultGroups', []);

@@ -1,6 +1,7 @@
 import { $, $$, api, state, refresh, refreshCounts, icon, esc, toast, toastError, initTooltips, params } from './core.js';
 
 const VIEWS = {
+  dashboard: { label: 'Dashboard', icon: 'chart', load: () => import('./views/dashboard.js') },
   compose: { label: 'Create post', icon: 'compose', load: () => import('./views/compose.js') },
   queue: { label: 'Queue', icon: 'queue', load: () => import('./views/posts.js') },
   agent: { label: 'Agent', icon: 'sparkle', load: () => import('./views/agent.js') },
@@ -12,7 +13,7 @@ const VIEWS = {
   feeds: { label: 'RSS autopilot', icon: 'rss', load: () => import('./views/feeds.js') },
   settings: { label: 'Settings', icon: 'settings', load: () => import('./views/settings.js') },
 };
-const NAV = ['queue', 'agent', 'analytics', 'accounts', 'library', 'drive', 'feeds', 'log', 'settings'];
+const NAV = ['dashboard', 'queue', 'agent', 'analytics', 'accounts', 'library', 'drive', 'feeds', 'log', 'settings'];
 
 let current = null;
 

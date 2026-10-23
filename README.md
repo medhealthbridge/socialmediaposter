@@ -47,6 +47,7 @@ Notes per network:
 
 ## Features
 
+- **Dashboard:** one page for everything that has gone out — running totals for likes, comments, shares and views across every account, a strip of accounts and groups to narrow by, and every post newest first with its figures and a button that opens the real post on the network it went to.
 - **Queue:** add posts whenever inspiration strikes, reorder them, then publish with **Post next** or each item's **Post** button. A "posts waiting" count shows in the sidebar.
 - **Scheduling:** pick a date and time, or "next free time" from your weekly posting slots, and posts go out on their own. Evergreen posts repost themselves every N days. See *Automatic publishing* below.
 - **Composer:** pick several accounts; live previews per network; character counters that use each network's rules; checks before you post (limits, media rules, JPEG for Instagram, Bluesky's 1 MB images…); **Post now** or **Add to queue**.
