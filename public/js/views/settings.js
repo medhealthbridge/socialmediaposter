@@ -36,11 +36,25 @@ export async function render(root, qs) {
     async schedule() {
       const { slots, next } = await api('/slots');
       const { url } = await api('/cron-url');
+      const intake = (await api('/intake-url')).url;
       const st = state.settings;
       const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       return [`<div class="card card-pad form" style="max-width:none"><h2>Automatic publishing</h2>
         <p class="text-2">This app has no clock of its own, so a free timer service calls it for you. Paste the address below into one, set it to every 15 minutes, and scheduled posts go out on their own.</p>
         <label class="field">Your private timer address${copyBox(url)}</label>
+      </div>
+      <div class="card card-pad form" style="max-width:none"><h2>${icon('download')} Intake address</h2>
+        <p class="text-2">Anything that makes content for you — Higgsfield, Eromify, Make, Zapier, n8n — can POST a finished file here and it lands in your queue, day or night. The address carries its own key, so nothing has to log in.</p>
+        <label class="field">Your private intake address${copyBox(intake)}</label>
+        <pre class="code">POST ${esc(intake)}
+{
+  "text": "Otters holding hands",
+  "url": "https://example.com/clip.mp4",
+  "group": "Animals",
+  "proofread": true,
+  "publish": false
+}</pre>
+        <p class="hint"><b>url</b> may be a list under <b>media</b>. <b>group</b> sends it to every account in that group; <b>accounts</b> takes names or ids instead; with neither it waits in the queue. <b>publish</b> posts it straight away, <b>proofread</b> runs the grammar check first. Keep the address private — anyone holding it can add to your queue.</p>
         <div class="callout ${st.autoPublish ? '' : 'warn'}">${icon(st.autoPublish ? 'check' : 'alert')}<div>
           ${st.autoPublish ? `<b>Working.</b> Last automatic run ${esc(fmt.rel(st.lastCronAt))}.` : `<b>Not set up yet.</b> Scheduled posts will wait until you publish them by hand.`}
           <div class="small" style="margin-top:6px">Free options: <a href="https://cron-job.org" target="_blank" rel="noopener">cron-job.org</a> (easiest) · <a href="https://console.cron-job.org" target="_blank" rel="noopener">UptimeRobot</a> · Vercel Cron (add <code>CRON_SECRET</code> in Vercel, see the README).</div></div></div>

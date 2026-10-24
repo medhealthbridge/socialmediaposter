@@ -14,6 +14,7 @@ import { createMcp } from './mcp.js';
 import { createEvents, KINDS } from './events.js';
 import { createAgent } from './agent.js';
 import { createDrive } from './drive.js';
+import { createIntake } from './intake.js';
 import { publicProviders, publicConnectors } from './providers/index.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
@@ -46,8 +47,10 @@ export async function createContext(db, opts = {}) {
   const analytics = createAnalytics(svc);
   const ai = createAI(svc.settings);
   const drive = createDrive({ settings: svc.settings, media: svc.media, events });
+  // Things arriving on their own are logged as the timer, the same as RSS and scheduling.
+  const intake = createIntake({ svc: serviceAs('timer'), events, ai });
   return {
-    db, svc, serviceAs, events, analytics, ai, drive,
+    db, svc, serviceAs, events, analytics, ai, drive, intake,
     auth: createAuth(db, opts), feeds: createFeeds(serviceAs('rss')), oauth: createOAuth(svc),
     mcp: createMcp({ svc: serviceAs('assistant'), analytics, db }),
     agent: createAgent({ serviceAs, analytics, settings: svc.settings }),
@@ -148,6 +151,7 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
 
   r('GET', '/api/slots', async ({ uid }) => ({ slots: await svc.getSlots(uid), next: await svc.nextSlot(uid) }));
   r('PUT', '/api/slots', async ({ uid, body }) => ({ slots: await svc.setSlots(uid, body.slots), next: await svc.nextSlot(uid) }));
+  r('GET', '/api/intake-url', async ({ uid }) => ({ url: `${await svc.settings.baseUrl(uid)}/api/intake?key=${await svc.settings.hookKey(uid)}` }));
   r('GET', '/api/cron-url', async ({ uid }) => ({ url: `${await svc.settings.baseUrl(uid)}/api/cron?key=${await svc.settings.cronKey(uid)}` }));
   r('POST', '/api/run-due', ({ uid }) => svc.runDue({ uid }));
 
@@ -257,6 +261,20 @@ export function createHandler(ctxOrFactory) {
         const me = await auth.userFromToken(token);
 
         // Called by a timer (Vercel Cron, cron-job.org, …) to publish whatever is due.
+        // Anything can POST a finished file here; the key in the address says whose it is.
+        if (path === '/api/intake') {
+          if (req.method !== 'POST') return send(405, { error: 'POST only' });
+          const given = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1] || url.searchParams.get('key');
+          const owner = await svc.settings.ownerOfHookKey(given);
+          if (owner == null) return send(401, { error: 'invalid intake key' });
+          try {
+            return send(201, await ctx.intake.receive(owner, await readJson(req)));
+          } catch (e) {
+            await ctx.events.add(owner, 'failed', `Could not take in a post: ${e.message}`, { level: 'error', actor: 'timer' });
+            return send(e.status || 500, { error: e.expose || e.status ? e.message : 'could not take that in' });
+          }
+        }
+
         if (path === '/api/cron') {
           const given = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1] || url.searchParams.get('key');
           const secret = process.env.CRON_SECRET;

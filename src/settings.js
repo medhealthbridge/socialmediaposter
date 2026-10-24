@@ -33,6 +33,23 @@ export function createSettings(db, vault) {
       return key;
     },
 
+    /** A stable secret for this user's intake URL, made on first use. */
+    async hookKey(uid) {
+      let key = await s.get(uid, 'hookKey');
+      if (!key) { key = `hk_${randomBytes(18).toString('base64url')}`; await s.set(uid, 'hookKey', key); }
+      return key;
+    },
+
+    /** Which user an intake key belongs to, or null. */
+    async ownerOfHookKey(key) {
+      if (!key || !/^hk_[\w-]{10,}$/.test(key)) return null;
+      for (const u of await db.all('SELECT id FROM users')) {
+        const mine = await s.get(u.id, 'hookKey');
+        if (mine && mine.length === key.length && timingSafeEqual(Buffer.from(mine), Buffer.from(key))) return u.id;
+      }
+      return null;
+    },
+
     /** Which user a cron key belongs to, or null. */
     async ownerOfCronKey(key) {
       if (!key || !/^cr_[\w-]{10,}$/.test(key)) return null;

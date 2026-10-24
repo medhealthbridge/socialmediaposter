@@ -548,3 +548,62 @@ test('T-ADULT-02 every network carries an adult policy, and the strict ones are 
   // These allow it when it is labelled.
   for (const id of ['x', 'bluesky', 'mastodon']) assert.equal(nets[id].adult, 'label', id);
 });
+
+test('T-HOOK-01 the intake address takes a finished file in, and reaches one account only', async () => {
+  const { call, base } = await boot();
+  const me = await call('/api/auth/signup', { method: 'POST', body: { email: 'owner@x.io', password: 'ownerpass1' } });
+  const other = await call('/api/auth/signup', { method: 'POST', body: { email: 'other@x.io', password: 'otherpass1' } });
+  const cookie = me.cookie;
+
+  // A stand-in for whatever made the video.
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  const files = http.createServer((req, res) => {
+    if (req.url === '/clip.png') { res.writeHead(200, { 'content-type': 'image/png', 'content-length': PNG.length }); return res.end(PNG); }
+    res.writeHead(404); res.end();
+  }).listen(0, '127.0.0.1');
+  servers.push(files);
+  await new Promise((r) => files.once('listening', r));
+  const src = `http://127.0.0.1:${files.address().port}/clip.png`;
+
+  const a = (await call('/api/accounts', { method: 'POST', cookie, body: { type: 'mock', name: 'Animals test', config: {} } })).json;
+  await call(`/api/accounts/${a.id}`, { method: 'PATCH', cookie, body: { groups: ['Animals'] } });
+
+  const { url } = (await call('/api/intake-url', { cookie })).json;
+  assert.match(url, /\/api\/intake\?key=hk_/);
+  const key = new URL(url).searchParams.get('key');
+  const post = (body) => call(`/api/intake?key=${encodeURIComponent(key)}`, { method: 'POST', body });
+
+  // The file is pulled in and kept, so the sender's link going away does not matter.
+  const made = await post({ text: 'Otters holding hands', url: src, group: 'Animals' });
+  assert.equal(made.status, 201, made.text.slice(0, 200));
+  assert.equal(made.json.media, 1);
+  assert.equal(made.json.accounts, 1);
+  assert.equal((await call('/api/media', { cookie })).json.length, 1, 'the picture is in the library');
+  const saved = (await call(`/api/posts/${made.json.id}`, { cookie })).json;
+  assert.equal(saved.text, 'Otters holding hands');
+  assert.equal(saved.deliveries.length, 1);
+  assert.equal(saved.source, 'intake', 'and it is marked as having arrived on its own');
+
+  // Text on its own is fine; a group nobody is in, or nothing at all, is refused.
+  assert.equal((await post({ text: 'just words' })).status, 201);
+  assert.match((await post({ text: 'x', group: 'Nope' })).json.error, /no accounts are in the group/);
+  assert.match((await post({})).json.error, /at least "text" or "url"/);
+  assert.match((await post({ text: 'x', url: 'file:///etc/passwd' })).json.error, /not a URL|http or https/);
+
+  // The key is the whole authority: a wrong one, or none, reaches nothing.
+  assert.equal((await call('/api/intake?key=hk_madeup', { method: 'POST', body: { text: 'x' } })).status, 401);
+  assert.equal((await call('/api/intake', { method: 'POST', body: { text: 'x' } })).status, 401);
+  assert.equal((await call(`/api/intake?key=${key}`)).status, 405, 'GET is not a delivery');
+
+  // And it belongs to one person: nothing it makes shows up for anybody else.
+  const theirs = (await call('/api/intake-url', { cookie: other.cookie })).json.url;
+  assert.notEqual(new URL(theirs).searchParams.get('key'), key, 'each account gets its own key');
+  assert.equal((await call('/api/posts', { cookie: other.cookie })).json.length, 0, 'their queue is untouched');
+  assert.equal((await call('/api/posts', { cookie })).json.length, 2, 'ours has what arrived');
+
+  // Every arrival is written to the log, so an overnight one can be accounted for.
+  const log = (await call('/api/events', { cookie })).json;
+  assert.match(log.map((e) => e.summary).join(' | '), /Received “Otters holding hands”/);
+  assert.equal(log.find((e) => /Received/.test(e.summary)).actor, 'timer');
+  assert.equal(base.includes('127.0.0.1'), true);
+});
