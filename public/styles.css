@@ -279,6 +279,37 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .acct { display: grid; gap: 12px; padding: 16px; }
 .acct-top { display: flex; gap: 12px; align-items: center; min-width: 0; }
 .acct .err { font-size: 12px; color: var(--bad); background: var(--bad-soft); padding: 6px 10px; border-radius: 6px; word-break: break-word; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-head { font-size: 11.5px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; padding: 2px 4px; }
+.cal-day { min-height: 104px; border: 1px solid var(--line); border-radius: 10px; padding: 5px; display: grid; gap: 3px; align-content: start; background: var(--surface); }
+.cal-day.empty { border-style: dashed; opacity: .35; }
+.cal-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cal-day.past { background: var(--surface-2); }
+.cal-day .dots { display: grid; gap: 3px; }
+.cal-day .n { font-size: 12px; font-weight: 700; color: var(--text-2); }
+.cal-day.today .n { color: var(--accent); }
+.cal-post { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; width: 100%; text-align: left; font-size: 11.5px; padding: 3px 5px; border-radius: 6px; border: 0; cursor: pointer; background: var(--accent-soft); color: var(--accent-text); overflow: hidden; }
+/* The text gets a line of its own, otherwise the time and avatars crush it to an ellipsis. */
+.cal-post .ellipsis { flex: 1 0 100%; min-width: 0; }
+.cal-post .t { font-variant-numeric: tabular-nums; font-weight: 700; flex: none; }
+.cal-post .av { flex: none; width: 14px; height: 14px; }
+.cal-post.published { background: var(--ok-soft); color: var(--ok); }
+.cal-post.failed, .cal-post.partial { background: var(--bad-soft); color: var(--bad); }
+.cal-slot { font-size: 11px; padding: 2px 5px; border-radius: 6px; border: 1px dashed var(--line); background: transparent; color: var(--text-2); cursor: pointer; text-align: left; }
+.cal-slot:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 760px) {
+  .cal { gap: 3px; }
+  .cal-day { min-height: 56px; padding: 3px; gap: 2px; }
+  /* A day cell is about 48px wide here, which fits neither a time nor a name.
+     Each post becomes a dot, coloured by state, and the day opens on tap. */
+  .cal-post { display: block; width: 10px; height: 10px; padding: 0; border-radius: 99px; font-size: 0; }
+  .cal-post .t, .cal-post .ellipsis, .cal-post .av { display: none; }
+  .cal-post { background: var(--accent); }
+  .cal-post.published { background: var(--ok); }
+  .cal-post.failed, .cal-post.partial { background: var(--bad); }
+  .cal-day .dots { display: flex; flex-wrap: wrap; gap: 3px; }
+  .cal-slot { font-size: 9px; padding: 0 2px; }
+}
 .feed-item { grid-template-columns: 76px minmax(0,1fr) auto; align-items: start; }
 .feed-item .shot { width: 76px; height: 76px; border-radius: 10px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; }
 .feed-item .shot img, .feed-item .shot video { width: 100%; height: 100%; object-fit: cover; }

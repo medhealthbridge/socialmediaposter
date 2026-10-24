@@ -10,7 +10,7 @@ import { createVault, loadKey } from './vault.js';
 import { createSettings } from './settings.js';
 import { createMedia } from './media.js';
 import { httpError } from './errors.js';
-import { nextFreeSlot } from './tz.js';
+import { nextFreeSlot, validTz } from './tz.js';
 import { inList } from './db.js';
 
 export { httpError };
@@ -199,6 +199,37 @@ const whenFrom = (body, slot) => {
         groups: await svc.listGroups(uid),
         items,
       };
+    },
+
+    /**
+     * A month's worth of the calendar: everything scheduled or published between two
+     * instants, plus the weekly posting times, so empty slots can be shown as openings.
+     * Dates are grouped by the day they fall on in your own timezone, not UTC.
+     */
+    async calendar(uid, { from, to, tz = 'UTC' } = {}) {
+      const start = from ? new Date(from) : new Date(Date.now() - 30 * 864e5);
+      const end = to ? new Date(to) : new Date(Date.now() + 60 * 864e5);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw httpError(400, 'invalid date range');
+      const zone = validTz(tz) ? tz : 'UTC';
+
+      const rows = await db.all(`SELECT * FROM posts WHERE user_id=?
+          AND COALESCE(posted_at, scheduled_at) IS NOT NULL
+          AND COALESCE(posted_at, scheduled_at) >= ? AND COALESCE(posted_at, scheduled_at) <= ?
+        ORDER BY COALESCE(posted_at, scheduled_at), id`, uid, start.toISOString(), end.toISOString());
+      const posts = await hydrate(uid, rows);
+
+      // Group by the calendar day each one lands on where the person actually is.
+      const dayOf = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+      const days = {};
+      for (const p of posts) {
+        const when = p.posted_at || p.scheduled_at;
+        (days[dayOf(when)] ??= []).push({
+          id: p.id, text: p.text, status: p.status, when,
+          accountIds: p.deliveries.map((d) => d.account_id),
+          media: p.mediaItems.filter((m) => !m.missing).length,
+        });
+      }
+      return { from: start.toISOString(), to: end.toISOString(), tz: zone, days, slots: await svc.getSlots(uid) };
     },
 
     /** Groups you have marked as adult. Stored by name, like the groups themselves. */

@@ -170,6 +170,9 @@ function buildRoutes({ svc, auth, feeds, analytics, ai, oauth, mcp, events, agen
   r('GET', '/api/events', ({ uid, query }) => events.list(uid, { kind: query.get('kind'), level: query.get('level'), limit: query.get('limit'), before: query.get('before') }));
   r('DELETE', '/api/events', ({ uid }) => events.clear(uid));
 
+  r('GET', '/api/calendar', ({ uid, me, query }) => svc.calendar(uid, {
+    from: query.get('from'), to: query.get('to'), tz: query.get('tz') || me?.tz,
+  }));
   r('GET', '/api/dashboard', ({ uid, query }) => svc.dashboard(uid, {
     accountId: query.get('account'), group: query.get('group'), limit: query.get('limit'),
   }));

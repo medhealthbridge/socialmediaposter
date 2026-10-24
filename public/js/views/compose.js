@@ -25,6 +25,8 @@ export async function render(root, params) {
       const last = store.get()?.accountIds || [];
       s.accountIds = new Set(last.filter((id) => accountById(id)));
     }
+    // Arriving from a free slot on the calendar: start scheduled for exactly that time.
+    if (params.get('at')) { s.mode = 'schedule'; s.when = params.get('at'); }
     if (params.get('text')) s.text = params.get('text');
     if (params.get('media')) { const ids = params.get('media').split(',').map(Number); const lib = await api('/media'); s.media = lib.filter((m) => ids.includes(m.id)); }
   }
