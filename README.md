@@ -76,6 +76,7 @@ Notes per network:
 
 The app has no clock of its own (that is what lets it run on Vercel's free plan), so a timer calls it:
 
+- **Vercel's own timer** is already set up, but only once a day: Vercel's free Hobby plan allows one cron run per day, and a deployment asking for more is rejected outright. That daily run is a safety net, not the main mechanism. (On a Pro plan you can change `crons` in `vercel.json` to `0 * * * *` for hourly.)
 - **Easiest:** open **Settings → Scheduling**, copy your private timer address, and paste it into a free account at [cron-job.org](https://cron-job.org) set to every 15 minutes. The page then shows "Working — last automatic run 2 minutes ago".
 - **On Vercel:** add an environment variable `CRON_SECRET` (any long random text) and redeploy. `vercel.json` already asks Vercel to call `/api/cron` hourly; Vercel sends that secret for you. The free plan allows one cron run per day, so use the option above as well if you want finer timing.
 
