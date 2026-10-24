@@ -132,7 +132,11 @@ async function openPostgres(url) {
   const pg = (await import('pg')).default;
   pg.types.setTypeParser(20, (v) => Number(v)); // COUNT(*) etc. as numbers
   const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
-  const pool = new pg.Pool({ connectionString: url, max: 5, idleTimeoutMillis: 10_000, ...(!local && !/sslmode=/.test(url) && { ssl: { rejectUnauthorized: true } }) });
+  // pg treats sslmode=prefer/require/verify-ca as full verification today, and warns that a
+  // future version will weaken them to libpq's meaning. Saying verify-full outright keeps
+  // exactly the behaviour we already get, after that change as well as before it.
+  const connectionString = local ? url : url.replace(/([?&]sslmode=)(prefer|require|verify-ca)\b/i, '$1verify-full');
+  const pool = new pg.Pool({ connectionString, max: 5, idleTimeoutMillis: 10_000, ...(!local && !/sslmode=/.test(url) && { ssl: { rejectUnauthorized: true } }) });
   const toPg = (sql) => { let i = 0; return sql.replace(/\?/g, () => `$${++i}`); };
   const query = (sql, a) => pool.query(toPg(sql), clean(a));
   // Idle connections can be closed by the server (e.g. Neon scaling to zero); log instead of crashing.
